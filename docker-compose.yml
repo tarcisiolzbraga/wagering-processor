@@ -1,0 +1,104 @@
+name: wagering
+
+x-api-env: &api-env
+  APP_ROLE: api
+  NODE_ENV: production
+  PORT: 3000
+  LOG_LEVEL: info
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_USER: wagering
+  POSTGRES_PASSWORD: wagering
+  POSTGRES_DB: wagering
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  SQS_ENDPOINT: http://localstack:4566
+  SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+  SQS_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+  AUTH_ENABLED: "false"
+  KEYCLOAK_ISSUER_URL: http://keycloak:8080/realms/jungle
+  KEYCLOAK_AUDIENCE: wagering-api
+
+x-api: &api
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  environment: *api-env
+  depends_on:
+    postgres:
+      condition: service_healthy
+    localstack:
+      condition: service_healthy
+  healthcheck:
+    # 127.0.0.1, nao localhost: o wget do busybox resolve localhost para ::1
+    # e o servidor escuta em IPv4.
+    test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health/ready"]
+    interval: 10s
+    timeout: 5s
+    retries: 12
+    start_period: 15s
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: wagering
+      POSTGRES_PASSWORD: wagering
+      POSTGRES_DB: wagering
+    # 5433 no host: a 5432 costuma estar ocupada por outro projeto.
+    # Dentro da rede do Compose a porta continua sendo 5432.
+    ports: ["5433:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wagering -d wagering"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:3
+    environment:
+      SERVICES: sqs
+      DEBUG: 0
+      AWS_DEFAULT_REGION: us-east-1
+      # URLs no formato http://host:4566/000000000000/fila — o mesmo do enunciado
+      # e o mesmo de SQS_QUEUE_URL. O default (sqs.<regiao>.localhost.localstack.cloud)
+      # e a estrategia "path" geram outros formatos.
+      SQS_ENDPOINT_STRATEGY: "off"
+    ports: ["4566:4566"]
+    volumes:
+      - ./docker/localstack/init-queues.sh:/etc/localstack/init/ready.d/init-queues.sh:ro
+    healthcheck:
+      # "available" = servico registrado mas nao iniciado; "running" = iniciado.
+      # Os dois contam como pronto — o init script cria as filas e vira "running".
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health | grep -qE '\"sqs\": \"(running|available)\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Keycloak nao entra no caminho de readiness: a API precisa subir com o IdP fora.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+    ports: ["8080:8080"]
+    volumes:
+      - ./docker/keycloak/realm-jungle.json:/opt/keycloak/data/import/realm-jungle.json:ro
+
+  api-1:
+    <<: *api
+    ports: ["3001:3000"]
+  api-2:
+    <<: *api
+    ports: ["3002:3000"]
+  api-3:
+    <<: *api
+    ports: ["3003:3000"]
+
+volumes:
+  pgdata:
