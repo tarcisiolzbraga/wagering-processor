@@ -1,0 +1,10 @@
+node_modules
+dist
+coverage
+logs
+.git
+.githooks
+.claude
+CLAUDE.md
+PRESENTATION.md
+*.log

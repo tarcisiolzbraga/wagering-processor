@@ -1,0 +1,41 @@
+{
+  "name": "wagering-processor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Distributed wagering processor — Jungle Gaming technical challenge",
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "dev": "bun --watch src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "db": "bun run src/infrastructure/persistence/migrator-cli.ts",
+    "test": "bun test",
+    "test:unit": "bun test test/unit",
+    "test:integration": "bun test test/integration",
+    "test:concurrency": "bun test test/concurrency",
+    "test:load": "bun run test/load/run.ts",
+    "compose:up": "docker compose up -d --build",
+    "compose:down": "docker compose down -v",
+    "compose:logs": "docker compose logs -f"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "^3.705.0",
+    "@mikro-orm/core": "^6.4.0",
+    "@mikro-orm/migrations": "^6.4.0",
+    "@mikro-orm/postgresql": "^6.4.0",
+    "@nestjs/common": "^10.4.0",
+    "@nestjs/core": "^10.4.0",
+    "@nestjs/platform-express": "^10.4.0",
+    "decimal.js": "^10.4.3",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
