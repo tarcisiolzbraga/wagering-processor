@@ -82,9 +82,14 @@ export class SubmitWagerTransaction {
     private readonly ids: IdGenerator,
   ) {}
 
-  async run(command: SubmitWagerTransactionCommand): Promise<SubmitWagerTransactionResult> {
-    assertUuid("walletId", command.walletId);
-    assertUuid("playerId", command.playerId);
+  async run(entrada: SubmitWagerTransactionCommand): Promise<SubmitWagerTransactionResult> {
+    // Normaliza antes de tudo: o hash, as consultas e as comparacoes usam o
+    // mesmo valor que o banco vai gravar.
+    const command: SubmitWagerTransactionCommand = {
+      ...entrada,
+      walletId: assertUuid("walletId", entrada.walletId),
+      playerId: assertUuid("playerId", entrada.playerId),
+    };
 
     const payloadHash = computePayloadHash(command);
     const now = this.clock.now();

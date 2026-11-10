@@ -33,5 +33,11 @@ export function decodeCursor(raw: string): LedgerCursor {
   if (Number.isNaN(createdAt.getTime())) {
     throw new InvalidInputError("cursor invalido");
   }
-  return { createdAt, id: obj.i };
+  // O id entra numa comparacao de tupla contra uma coluna `uuid`. Sem esta
+  // checagem, um cursor adulterado chega ao SQL e estoura 22P02 — 500 em vez
+  // do 400 que um cursor invalido merece.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(obj.i)) {
+    throw new InvalidInputError("cursor invalido");
+  }
+  return { createdAt, id: obj.i.toLowerCase() };
 }

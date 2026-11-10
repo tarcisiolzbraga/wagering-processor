@@ -10,6 +10,7 @@ import { Wallet } from "../../domain/wallet/wallet";
 import type { Clock } from "../ports/clock";
 import type { IdGenerator } from "../ports/id-generator";
 import type { UnitOfWork } from "../ports/unit-of-work";
+import { assertUuid } from "../shared/assert-uuid";
 
 export interface OpenWalletCommand {
   readonly playerId: string;
@@ -46,6 +47,11 @@ export class OpenWallet {
   ) {}
 
   async run(command: OpenWalletCommand): Promise<OpenWalletResult> {
+    // Validado e normalizado aqui, nao no controller: qualquer canal que abra
+    // carteira passa por este use case. Sem isso, um playerId malformado
+    // chegava na coluna `uuid` e virava 500 em vez de 400.
+    const playerId = assertUuid("playerId", command.playerId);
+
     const now = this.clock.now();
     const initialBalance = Money.from(command.initialBalance);
     const walletId = this.ids.next();
@@ -53,7 +59,7 @@ export class OpenWallet {
 
     const { wallet, openingEntry } = Wallet.open({
       id: walletId,
-      playerId: command.playerId,
+      playerId,
       initialBalance,
       openingTransactionId,
       openingEntryId: this.ids.next(),
@@ -63,12 +69,12 @@ export class OpenWallet {
     return this.uow.run(async (ctx) => {
       if (!(await ctx.wallets.insertIfAbsent(wallet))) {
         const existente = await ctx.wallets.findByPlayerAndCurrency(
-          command.playerId,
+          playerId,
           initialBalance.currency,
         );
         if (!existente) {
           throw new Error(
-            `conflito de carteira para ${command.playerId}/${initialBalance.currency} sem linha correspondente`,
+            `conflito de carteira para ${playerId}/${initialBalance.currency} sem linha correspondente`,
           );
         }
         return {
@@ -88,7 +94,7 @@ export class OpenWallet {
           idempotencyKey: `internal:opening:${walletId}`,
           payloadHash: `opening:${walletId}`,
           walletId,
-          playerId: command.playerId,
+          playerId,
           roundId: `opening:${walletId}`,
           gameId: "opening",
           kind: WagerTransactionKind.Opening,
