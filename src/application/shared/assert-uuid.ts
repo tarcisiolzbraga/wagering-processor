@@ -19,5 +19,15 @@ export function assertUuid(field: string, value: string): string {
       `${field} deve ser um UUID, recebido ${JSON.stringify(value)}`,
     );
   }
-  return value;
+  // Normaliza para minusculas, e o chamador **tem** que usar o retorno.
+  //
+  // O PostgreSQL grava `uuid` em minusculas. Sem normalizar, um playerId em
+  // maiusculas seria comparado cru contra o valor lido do banco, daria
+  // PLAYER_MISMATCH e gravaria uma linha REJECTED — e aí o UNIQUE de
+  // (provider, external id) faria a reapresentacao corrigida devolver 409 para
+  // sempre. Uma aposta legitima perdida de forma definitiva.
+  //
+  // Por isso tambem entra **antes** do payloadHash: mesma operacao em caixa
+  // diferente tem que gerar o mesmo hash.
+  return value.toLowerCase();
 }
