@@ -1,5 +1,8 @@
 import { Migrator } from "@mikro-orm/migrations";
+import { UnderscoreNamingStrategy } from "@mikro-orm/core";
 import { defineConfig } from "@mikro-orm/postgresql";
+
+import { entitySchemas } from "./entities";
 
 import { loadEnv, type Env } from "../../config/env";
 
@@ -17,8 +20,12 @@ export function buildOrmConfig(env: Env = loadEnv()) {
     password: env.POSTGRES_PASSWORD,
     dbName: env.POSTGRES_DB,
 
-    entities: [], // EntitySchemas entram na Fase 3
+    entities: entitySchemas,
     discovery: { disableDynamicFileAccess: true, warnWhenNoEntities: false },
+
+    // Evita repetir `fieldName` em cada propriedade: o schema e snake_case e
+    // o codigo e camelCase. Nomes de tabela continuam explicitos no schema.
+    namingStrategy: UnderscoreNamingStrategy,
 
     extensions: [Migrator],
     migrations: {
