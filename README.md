@@ -4,7 +4,7 @@ Serviço financeiro distribuído que processa transações de apostas de múltip
 
 Desafio técnico Jungle Gaming. As decisões de arquitetura e seus trade-offs estão em [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
-> **Estado atual: Fase 0 (fundação).** Sobem PostgreSQL, LocalStack (SQS), Keycloak e três instâncias da API com health checks. O domínio financeiro, a API de transações e os workers chegam nas fases seguintes — ver `ARCHITECTURE.md`.
+> **Estado atual: API HTTP completa.** Domínio, schema, persistência, use cases e API estão prontos. Os workers (consumer SQS, publisher da outbox, reprocessamento de referência) e a autenticação chegam nas fases seguintes — ver `ARCHITECTURE.md`.
 
 ## Requisitos
 
@@ -64,6 +64,76 @@ bun run compose:down
 | `bun run compose:logs` | logs de todos os serviços |
 
 Os testes de integração e concorrência precisam da stack no ar (`bun run compose:up`).
+
+## API
+
+### Carteiras
+
+```http
+POST /wallets
+```
+
+```json
+{ "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
+  "initialBalance": { "amount": "1000.00", "currency": "BRL" } }
+```
+
+Saldo inicial maior que zero gera uma transação interna `OPENING` com lançamento `CREDIT` **na mesma transação SQL**. `version` fica em `1`: a abertura é a criação, não uma movimentação.
+
+```http
+GET  /wallets/:walletId
+GET  /wallets/:walletId/ledger?cursor=...&limit=50
+POST /wallets/:walletId/reconciliation
+```
+
+O `cursor` é opaco e estável sobre `(created_at, id)` — nunca `OFFSET`, que pula ou repete linha quando a tabela recebe insert durante a paginação. `limit` aceita de 1 a 200.
+
+A reconciliação **não corrige** divergência: se os dois lados discordam, não se sabe qual está certo, e corrigir destruiria a evidência do bug. Ela loga, sinaliza `consistent: false` e deixa a decisão para um humano.
+
+### Transações
+
+```http
+POST /wagering/transactions
+Idempotency-Key: provider-a:transaction-123
+```
+
+```json
+{ "providerId": "provider-a",
+  "externalTransactionId": "transaction-123",
+  "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
+  "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
+  "roundId": "round-987",
+  "gameId": "fortune-chimp",
+  "kind": "BET",
+  "money": { "amount": "25.00", "currency": "BRL" } }
+```
+
+O header `Idempotency-Key` é **obrigatório** — é a fonte da verdade da idempotência, e aceitar sem ele seria aceitar uma operação sem identidade.
+
+```http
+GET /wagering/transactions/:transactionId
+GET /providers/:providerId/wagering/transactions/:externalTransactionId
+```
+
+### Mapa de status
+
+| Situação | Status | Corpo |
+|---|---|---|
+| Aplicada, ou replay da aplicação original | `200` | `transactionId`, `status`, `balance`, `idempotentReplay` |
+| Aceita, aguardando a referência chegar | `202` | `status: PENDING_REFERENCE` |
+| Carteira criada | `201` | a carteira |
+| Payload inválido | `400` | `error: INVALID_PAYLOAD`, `retryable: false` |
+| Conflito de idempotência, operação duplicada, carteira duplicada | `409` | `error` nomeando o conflito |
+| Rejeição por regra de negócio | `422` | `failureCode` |
+| Falha transitória de infraestrutura | `503` + `Retry-After` | `retryable: true` |
+
+O que está em jogo aqui: colapsar essas situações num código só obriga o provedor a interpretar mensagem de erro para decidir se pode reenviar. Essa é a diferença entre uma integração que se recupera sozinha e uma que gera ticket.
+
+`422` e não `400` na rejeição de negócio porque a requisição estava **bem formada e foi compreendida** — foi o domínio que disse não.
+
+### Correlação
+
+Todo endpoint aceita `X-Correlation-Id` e o devolve na resposta. Se o cliente não mandar, um é gerado. O id atravessa HTTP, outbox, SQS e consumer: sem ele, investigar um incidente financeiro é costurar logs de três sistemas sem ligação entre eles.
 
 ## Health checks
 

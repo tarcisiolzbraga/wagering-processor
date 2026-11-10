@@ -4,6 +4,7 @@ import { NestFactory } from "@nestjs/core";
 
 import { AppModule } from "./app.module";
 import { loadEnv } from "./config/env";
+import { DomainExceptionFilter } from "./infrastructure/http/domain-exception.filter";
 
 const NOT_YET_IMPLEMENTED: Record<string, string> = {
   consumer: "Fase 6",
@@ -20,6 +21,8 @@ async function bootstrap(): Promise<void> {
   }
 
   const app = await NestFactory.create(AppModule.register(env), { bufferLogs: false });
+  // Um unico caminho de traducao de erro para status HTTP.
+  app.useGlobalFilters(new DomainExceptionFilter());
   app.enableShutdownHooks();
   await app.listen(env.PORT, "0.0.0.0");
 
