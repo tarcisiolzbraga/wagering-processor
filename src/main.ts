@@ -2,39 +2,86 @@ import "reflect-metadata";
 
 import { NestFactory } from "@nestjs/core";
 
+import { LOGGER, type Logger } from "./application/ports/logger";
+import { WagerTransactionConsumer } from "./application/wagering/consume-wager-transactions";
 import { AppModule } from "./app.module";
-import { loadEnv } from "./config/env";
+import { loadEnv, type Env } from "./config/env";
 import { DomainExceptionFilter } from "./infrastructure/http/domain-exception.filter";
 
-const NOT_YET_IMPLEMENTED: Record<string, string> = {
-  consumer: "Fase 6",
+const NAO_IMPLEMENTADO: Record<string, string> = {
   outbox: "Fase 7",
   reference: "Fase 8",
 };
 
-async function bootstrap(): Promise<void> {
-  const env = loadEnv();
-
-  if (env.APP_ROLE !== "api") {
-    const phase = NOT_YET_IMPLEMENTED[env.APP_ROLE];
-    throw new Error(`APP_ROLE=${env.APP_ROLE} ainda nao implementado (chega na ${phase}).`);
-  }
-
+async function runApi(env: Env): Promise<void> {
   const app = await NestFactory.create(AppModule.register(env), { bufferLogs: false });
   // Um unico caminho de traducao de erro para status HTTP.
   app.useGlobalFilters(new DomainExceptionFilter());
   app.enableShutdownHooks();
   await app.listen(env.PORT, "0.0.0.0");
 
-  console.log(
-    JSON.stringify({
-      level: "info",
-      msg: "api ouvindo",
-      role: env.APP_ROLE,
-      port: env.PORT,
-      pid: process.pid,
-    }),
-  );
+  app.get<Logger>(LOGGER).info("api ouvindo", { port: env.PORT });
+}
+
+/**
+ * O consumer nao abre servidor HTTP: `createApplicationContext` sobe o
+ * container de injecao sem rotas.
+ *
+ * Em SIGTERM o consumer **drena** — para de buscar mensagens novas, espera as
+ * em andamento concluirem, e devolve a visibilidade das que chegaram depois do
+ * pedido de parada. Matar no meio de uma transacao financeira e o que isso
+ * evita.
+ */
+async function runConsumer(env: Env): Promise<void> {
+  const app = await NestFactory.createApplicationContext(AppModule.register(env), {
+    logger: false,
+  });
+  const consumer = app.get(WagerTransactionConsumer);
+  const logger = app.get<Logger>(LOGGER);
+
+  let encerrando = false;
+  const encerra = async (signal: string): Promise<void> => {
+    if (encerrando) return;
+    encerrando = true;
+    logger.info("sinal recebido, drenando", { signal });
+    await consumer.stop();
+    await app.close();
+    logger.info("encerrado com as mensagens em andamento concluidas");
+    process.exit(0);
+  };
+
+  // O `.catch` nao e cosmetico: sem ele, um stop() que rejeita vira unhandled
+  // rejection, `app.close()` e `process.exit(0)` nao rodam, e o container fica
+  // pendurado ate o SIGKILL do fim do grace period.
+  const trata = (signal: string) => (): void => {
+    encerra(signal).catch((erro: unknown) => {
+      logger.error("falha ao encerrar; saindo com erro", {
+        signal,
+        reason: erro instanceof Error ? erro.message : String(erro),
+      });
+      process.exit(1);
+    });
+  };
+
+  process.on("SIGTERM", trata("SIGTERM"));
+  process.on("SIGINT", trata("SIGINT"));
+
+  await consumer.start();
+}
+
+async function bootstrap(): Promise<void> {
+  const env = loadEnv();
+
+  switch (env.APP_ROLE) {
+    case "api":
+      return runApi(env);
+    case "consumer":
+      return runConsumer(env);
+    default: {
+      const fase = NAO_IMPLEMENTADO[env.APP_ROLE];
+      throw new Error(`APP_ROLE=${env.APP_ROLE} ainda nao implementado (chega na ${fase}).`);
+    }
+  }
 }
 
 bootstrap().catch((error: unknown) => {

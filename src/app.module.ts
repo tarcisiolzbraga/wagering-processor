@@ -3,9 +3,12 @@ import { MikroORM } from "@mikro-orm/postgresql";
 import { Module, type DynamicModule, type MiddlewareConsumer, type NestModule } from "@nestjs/common";
 
 import { CLOCK } from "./application/ports/clock";
+import { LOGGER, type Logger } from "./application/ports/logger";
+import { MESSAGE_QUEUE, type MessageQueue } from "./application/ports/message-queue";
 import { ID_GENERATOR } from "./application/ports/id-generator";
 import { RECONCILIATION_ALARM } from "./application/ports/reconciliation-alarm";
 import { UNIT_OF_WORK, type UnitOfWork } from "./application/ports/unit-of-work";
+import { WagerTransactionConsumer } from "./application/wagering/consume-wager-transactions";
 import { SubmitWagerTransaction } from "./application/wagering/submit-wager-transaction";
 import { WagerTransactionQueries } from "./application/wagering/wager-transaction-queries";
 import { OpenWallet } from "./application/wallets/open-wallet";
@@ -17,6 +20,8 @@ import { HealthController } from "./infrastructure/http/health/health.controller
 import { ReadinessService } from "./infrastructure/http/health/readiness.service";
 import { ProvidersController, WageringController } from "./infrastructure/http/wagering.controller";
 import { WalletsController } from "./infrastructure/http/wallets.controller";
+import { SqsMessageQueue } from "./infrastructure/messaging/sqs-message-queue";
+import { ConsoleLogger } from "./infrastructure/observability/console-logger";
 import { LoggingReconciliationAlarm } from "./infrastructure/observability/logging-reconciliation-alarm";
 import { buildOrmConfig } from "./infrastructure/persistence/mikro-orm.config";
 import { MikroUnitOfWork } from "./infrastructure/persistence/unit-of-work";
@@ -53,6 +58,19 @@ export class AppModule implements NestModule {
         },
         ReadinessService,
 
+        {
+          provide: LOGGER,
+          useFactory: () => new ConsoleLogger(env.LOG_LEVEL === "trace" ? "debug" : env.LOG_LEVEL, {
+            role: env.APP_ROLE,
+            pid: process.pid,
+          }),
+        },
+        {
+          provide: MESSAGE_QUEUE,
+          useFactory: (client: SQSClient) =>
+            new SqsMessageQueue(client, env.SQS_QUEUE_URL, env.SQS_DLQ_URL),
+          inject: [SQSClient],
+        },
         { provide: CLOCK, useClass: SystemClock },
         { provide: ID_GENERATOR, useClass: UuidV7Generator },
         { provide: RECONCILIATION_ALARM, useClass: LoggingReconciliationAlarm },
@@ -82,6 +100,12 @@ export class AppModule implements NestModule {
           provide: WagerTransactionQueries,
           useFactory: (uow: UnitOfWork) => new WagerTransactionQueries(uow),
           inject: [UNIT_OF_WORK],
+        },
+        {
+          provide: WagerTransactionConsumer,
+          useFactory: (queue: MessageQueue, submit: SubmitWagerTransaction, logger: Logger) =>
+            new WagerTransactionConsumer(queue, submit, logger),
+          inject: [MESSAGE_QUEUE, SubmitWagerTransaction, LOGGER],
         },
         {
           provide: ReconcileWallet,
