@@ -156,6 +156,26 @@ Os dois são abertos, sem autenticação: readiness precisa responder mesmo com 
 }
 ```
 
+## Consumer SQS
+
+O serviço `consumer` do Compose consome `wager-transactions.fifo` e **reutiliza o mesmo use case da entrada HTTP** — duas implementações da mesma regra financeira divergem na primeira correção aplicada num caminho e esquecida no outro.
+
+| Comportamento | Como |
+|---|---|
+| Deduplicação | inbox persistente por `(consumerName, messageId)`, usando o `messageId` do **envelope** (identidade no provedor), não o id do broker — que muda quando o provedor reenvia |
+| `ack` | **somente após o commit**. Dar ack antes é perder a mensagem se o processo morrer com trabalho não confirmado |
+| Erro de negócio | commita a rejeição e dá ack. Reenviar não muda o resultado; manter na fila é loop infinito |
+| Erro transitório | sem ack, devolve a visibilidade com espera curta. No limite de entregas, deixa o redrive do broker agir |
+| Erro permanente | vai **direto** para a DLQ com o motivo em atributo, em vez de gastar cinco entregas inúteis |
+| `SIGTERM` | drena: para de buscar, espera as mensagens em andamento, e devolve a visibilidade das que chegaram depois do pedido de parada |
+
+Ver o drain acontecendo:
+
+```bash
+docker compose logs -f consumer &
+docker compose stop -t 40 consumer
+```
+
 ## Filas
 
 | Fila | Papel |

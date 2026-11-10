@@ -90,6 +90,18 @@ services:
     volumes:
       - ./docker/keycloak/realm-jungle.json:/opt/keycloak/data/import/realm-jungle.json:ro
 
+  # O consumer nao abre porta: nao tem servidor HTTP, so o loop de long polling.
+  # `stop_grace_period` precisa caber o dreno — tempo de concluir as mensagens
+  # em andamento depois do SIGTERM, em vez de ser morto no meio.
+  consumer:
+    <<: *api
+    environment:
+      <<: *api-env
+      APP_ROLE: consumer
+    healthcheck:
+      disable: true
+    stop_grace_period: 40s
+
   api-1:
     <<: *api
     ports: ["3001:3000"]
