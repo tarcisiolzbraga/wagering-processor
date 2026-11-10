@@ -1,5 +1,6 @@
 import { MikroORM } from "@mikro-orm/postgresql";
 
+import { loadEnv } from "../../config/env";
 import { buildOrmConfig } from "./mikro-orm.config";
 
 /**
@@ -13,7 +14,7 @@ const USAGE = `uso: bun run db <comando>
   down              reverte a ultima migration aplicada
   create <nome>     cria uma migration vazia e versionada
   list              lista o que esta aplicado e o que esta pendente
-  fresh             dropa o schema e reaplica tudo (bloqueado em producao)`;
+  fresh --yes       dropa o schema e reaplica tudo (destrutivo)`;
 
 async function main(): Promise<number> {
   const [command, ...args] = process.argv.slice(2);
@@ -61,11 +62,30 @@ async function main(): Promise<number> {
         return 0;
       }
       case "fresh": {
-        if (process.env["NODE_ENV"] === "production") {
+        // Comando destrutivo: derruba o schema inteiro. Dois portoes, porque
+        // um `process.env` cru nao basta — NODE_ENV com grafia errada passaria
+        // pela checagem e apagaria o banco.
+        //
+        // 1. loadEnv valida NODE_ENV contra o enum: grafia errada nao sobe.
+        // 2. --yes explicito: nao acontece por acidente nem por script antigo.
+        const { NODE_ENV } = loadEnv();
+        if (NODE_ENV === "production") {
           console.error("fresh e bloqueado em producao");
           return 1;
         }
-        await orm.getSchemaGenerator().dropSchema();
+        if (!args.includes("--yes")) {
+          console.error(
+            `fresh derruba o schema inteiro de ${NODE_ENV}.\n` +
+              "Confirme com: bun run db fresh --yes",
+          );
+          return 1;
+        }
+        // Nao usa o schema generator: ele so conhece entidades mapeadas, e
+        // este schema e definido por SQL nas migrations. Derrubar o schema
+        // inteiro e a semantica correta para um schema gerido por migrations.
+        const conn = orm.em.getConnection();
+        await conn.execute("drop schema public cascade");
+        await conn.execute("create schema public");
         await migrator.up();
         console.log("schema recriado e migrations reaplicadas");
         return 0;

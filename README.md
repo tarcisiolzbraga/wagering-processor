@@ -55,7 +55,7 @@ bun run compose:down
 | `bun run db down` | reverte a última migration |
 | `bun run db create <nome>` | cria uma migration versionada e vazia |
 | `bun run db list` | o que está aplicado e o que está pendente |
-| `bun run db fresh` | dropa o schema e reaplica tudo (bloqueado em produção) |
+| `bun run db fresh --yes` | dropa o schema e reaplica tudo. Destrutivo: exige `--yes` e é bloqueado em produção |
 | `bun test` | suíte completa |
 | `bun run test:unit` | só unidade — sem container, sem rede |
 | `bun run test:integration` | PostgreSQL e LocalStack reais |
