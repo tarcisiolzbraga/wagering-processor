@@ -4,6 +4,7 @@ import {
   InsertTransactionOutcome,
   type WagerTransactionRepository,
 } from "../../../application/ports/repositories";
+import { WagerTransactionKind } from "../../../domain/wagering/wager-transaction-kind";
 import { WagerTransactionStatus } from "../../../domain/wagering/wager-transaction-status";
 import type { WagerTransaction } from "../../../domain/wagering/wager-transaction";
 import {
@@ -30,16 +31,23 @@ export class MikroWagerTransactionRepository implements WagerTransactionReposito
     const entity = WagerTransactionMapper.toEntity(transaction, new WagerTransactionEntity());
 
     try {
-      const result = await this.em
-        .createQueryBuilder(wagerTransactionSchema)
-        .insert(entity)
-        .onConflict("idempotency_key")
-        .ignore()
-        .execute("run");
+      // Savepoint, nao try/catch solto: no PostgreSQL uma violacao de unicidade
+      // **aborta a transacao SQL inteira**. Sem isolar o insert, capturar o
+      // 23505 e seguir deixaria o COMMIT virar ROLLBACK em silencio — e a
+      // linha de inbox gravada antes desapareceria junto, quebrando
+      // exatamente a atomicidade que a inbox existe para garantir.
+      return await this.em.transactional(async (em) => {
+        const result = await em
+          .createQueryBuilder(wagerTransactionSchema)
+          .insert(entity)
+          .onConflict("idempotency_key")
+          .ignore()
+          .execute("run");
 
-      return result.affectedRows === 1
-        ? InsertTransactionOutcome.Inserted
-        : InsertTransactionOutcome.IdempotencyKeyExists;
+        return result.affectedRows === 1
+          ? InsertTransactionOutcome.Inserted
+          : InsertTransactionOutcome.IdempotencyKeyExists;
+      });
     } catch (error: unknown) {
       // ON CONFLICT cobre uma constraint so. A outra garantia de unicidade —
       // (provider, external id) — chega aqui como 23505 e precisa virar
@@ -92,6 +100,17 @@ export class MikroWagerTransactionRepository implements WagerTransactionReposito
       })
       .where({ id: transaction.id })
       .execute("run");
+  }
+
+  async findProcessedReversalOf(
+    referenceTransactionId: string,
+  ): Promise<WagerTransaction | undefined> {
+    const entity = await this.em.findOne(wagerTransactionSchema, {
+      referenceTransactionId,
+      status: WagerTransactionStatus.Processed,
+      kind: { $in: [WagerTransactionKind.Refund, WagerTransactionKind.Rollback] },
+    });
+    return entity ? WagerTransactionMapper.toDomain(entity) : undefined;
   }
 
   async findAwaitingReference(limit: number): Promise<readonly WagerTransaction[]> {

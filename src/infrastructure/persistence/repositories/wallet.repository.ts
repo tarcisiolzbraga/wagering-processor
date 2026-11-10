@@ -32,9 +32,16 @@ export class MikroWalletRepository implements WalletRepository {
     return entity ? WalletMapper.toDomain(entity) : undefined;
   }
 
-  async insert(wallet: Wallet): Promise<void> {
+  async insertIfAbsent(wallet: Wallet): Promise<boolean> {
     const entity = WalletMapper.toEntity(wallet, new WalletEntity());
-    await this.em.insert(walletSchema, entity);
+    const result = await this.em
+      .createQueryBuilder(walletSchema)
+      .insert(entity)
+      .onConflict(["player_id", "currency"])
+      .ignore()
+      .execute("run");
+
+    return result.affectedRows === 1;
   }
 
   /**

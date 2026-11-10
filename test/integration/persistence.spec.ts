@@ -41,7 +41,7 @@ async function abrirCarteira(saldo = "1000.00"): Promise<{ walletId: string; pla
   });
 
   await uow.run(async (ctx) => {
-    await ctx.wallets.insert(wallet);
+    await ctx.wallets.insertIfAbsent(wallet);
     if (openingEntry) {
       const abertura = WagerTransaction.create({
         id: openingEntry.transactionId,
@@ -537,7 +537,7 @@ describe("UnitOfWork — atomicidade", () => {
 
     await expect(
       uow.run(async (ctx) => {
-        await ctx.wallets.insert(wallet);
+        await ctx.wallets.insertIfAbsent(wallet);
         throw new Error("falha proposital depois da escrita");
       }),
     ).rejects.toThrow("falha proposital");

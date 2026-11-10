@@ -18,7 +18,14 @@ export interface WalletRepository {
   findById(walletId: string): Promise<Wallet | undefined>;
   findByPlayerAndCurrency(playerId: string, currency: string): Promise<Wallet | undefined>;
 
-  insert(wallet: Wallet): Promise<void>;
+  /**
+   * Devolve false quando ja existe carteira para o par (playerId, currency).
+   *
+   * E `ON CONFLICT DO NOTHING`, nao try/catch: uma violacao de unicidade
+   * **aborta a transacao** no PostgreSQL, e aí nao daria para responder o
+   * conflito de dentro dela — nem para gravar nada mais.
+   */
+  insertIfAbsent(wallet: Wallet): Promise<boolean>;
 
   /**
    * `UPDATE ... WHERE id = ? AND version = ?`. Devolve false quando nenhuma
@@ -84,6 +91,18 @@ export interface WagerTransactionRepository {
   ): Promise<WagerTransaction | undefined>;
 
   update(transaction: WagerTransaction): Promise<void>;
+
+  /**
+   * Reversao PROCESSED que ja consumiu esta referencia, se houver.
+   *
+   * Consultado **sob o lock da carteira**: duas reversoes da mesma referencia
+   * tocam a mesma carteira por definicao (a validacao de escopo exige), entao o
+   * FOR UPDATE ja as serializa e a segunda ve a primeira. O indice parcial
+   * `wager_transactions_single_reversal` continua como ultima barreira, mas
+   * atingi-lo aborta a transacao — ou seja, significa que algum caminho
+   * esqueceu o lock.
+   */
+  findProcessedReversalOf(referenceTransactionId: string): Promise<WagerTransaction | undefined>;
 
   /** Fila do worker de referencia ausente, mais antigas primeiro. */
   findAwaitingReference(limit: number): Promise<readonly WagerTransaction[]>;
