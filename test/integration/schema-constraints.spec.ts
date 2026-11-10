@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { MikroORM } from "@mikro-orm/postgresql";
+import type { MikroORM } from "@mikro-orm/postgresql";
 
 import { loadEnv } from "../../src/config/env";
-import { buildOrmConfig } from "../../src/infrastructure/persistence/mikro-orm.config";
+import { openOrmWithFreshSchema } from "../support/database";
 
 /**
  * Cada teste aqui **tenta violar** uma garantia e exige que o PostgreSQL
@@ -123,7 +123,7 @@ async function transacaoProcessada(over: Record<string, unknown> = {}): Promise<
 }
 
 beforeAll(async () => {
-  orm = await MikroORM.init(buildOrmConfig(loadEnv()));
+  orm = await openOrmWithFreshSchema();
   const wallet = walletRow();
   await insert("wallets", wallet);
   walletId = wallet["id"] as string;
