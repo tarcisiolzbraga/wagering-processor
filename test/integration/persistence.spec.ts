@@ -445,6 +445,11 @@ describe("InboxRepository", () => {
 });
 
 describe("OutboxRepository", () => {
+  const claim = (over: Record<string, unknown> = {}) =>
+    uow.run((ctx) =>
+      ctx.outbox.claimDue({ limit: 100, leaseSeconds: 30, workerId: "teste", maxAttempts: 10, ...over }),
+    );
+
   async function eventoPendente(): Promise<OutboxMessage> {
     const { walletId, playerId } = await abrirCarteira();
     const tx = aposta(walletId, playerId);
@@ -464,56 +469,96 @@ describe("OutboxRepository", () => {
     );
   }
 
-  it("grava e reivindica com SKIP LOCKED", async () => {
+  it("grava e reivindica com SKIP LOCKED, contando a tentativa", async () => {
     const message = await eventoPendente();
     await uow.run((ctx) => ctx.outbox.enqueue([message]));
 
-    const reivindicadas = await uow.run((ctx) => ctx.outbox.claimDue(50, new Date()));
-    expect(reivindicadas.map((m) => m.id)).toContain(message.id);
+    const reivindicadas = await claim();
+    const minha = reivindicadas.find((m) => m.id === message.id);
+    expect(minha).toBeDefined();
+    // A tentativa e contada na reivindicacao: um publisher que morre antes de
+    // marcar nunca registraria a tentativa, e o backoff ficaria em zero.
+    expect(minha?.attempts).toBe(1);
   });
 
   it("preserva o envelope e a partition key", async () => {
     const message = await eventoPendente();
     await uow.run((ctx) => ctx.outbox.enqueue([message]));
 
-    const lidas = await uow.run((ctx) => ctx.outbox.claimDue(100, new Date()));
-    const lida = lidas.find((m) => m.id === message.id);
-
+    const lida = (await claim()).find((m) => m.id === message.id);
     expect(lida?.eventType).toBe("WalletBalanceChanged");
     expect(lida?.partitionKey).toBe(message.partitionKey);
     expect((lida?.payload as Record<string, unknown>)["eventType"]).toBe("WalletBalanceChanged");
   });
 
+  it("o lease impede outro publisher de pegar a mesma linha", async () => {
+    const message = await eventoPendente();
+    await uow.run((ctx) => ctx.outbox.enqueue([message]));
+
+    const primeira = await claim({ leaseSeconds: 60 });
+    expect(primeira.map((m) => m.id)).toContain(message.id);
+
+    const segunda = await claim({ leaseSeconds: 60 });
+    expect(segunda.map((m) => m.id)).not.toContain(message.id);
+
+    await uow.run((ctx) => ctx.outbox.markPublished(message.id));
+  });
+
   it("publicada sai da fila de reivindicacao", async () => {
     const message = await eventoPendente();
     await uow.run((ctx) => ctx.outbox.enqueue([message]));
+    await uow.run((ctx) => ctx.outbox.markPublished(message.id));
 
-    message.markPublished(new Date());
-    await uow.run((ctx) => ctx.outbox.markPublished(message));
-
-    const reivindicadas = await uow.run((ctx) => ctx.outbox.claimDue(100, new Date()));
-    expect(reivindicadas.map((m) => m.id)).not.toContain(message.id);
+    expect((await claim()).map((m) => m.id)).not.toContain(message.id);
   });
 
-  it("retry agendado no futuro nao e reivindicada ainda", async () => {
+  it("deferRetry adia e libera o lease", async () => {
+    const message = await eventoPendente();
+    await uow.run((ctx) => ctx.outbox.enqueue([message]));
+    await claim();
+
+    await uow.run((ctx) => ctx.outbox.deferRetry(message.id, 60_000, "broker fora"));
+
+    // Adiada para o futuro: nao e reivindicada agora.
+    expect((await claim()).map((m) => m.id)).not.toContain(message.id);
+    // Mas o lease foi liberado, entao outro publisher pode assumir depois.
+    const linhas = await orm.em
+      .getConnection()
+      .execute<Array<{ locked_by: string | null; last_error: string | null }>>(
+        "select locked_by, last_error from outbox_messages where id = ?",
+        [message.id],
+      );
+    expect(linhas[0]?.locked_by).toBeNull();
+    expect(linhas[0]?.last_error).toBe("broker fora");
+  });
+
+  it("abandonada sai da fila e da metrica de atraso", async () => {
+    const message = await eventoPendente();
+    await uow.run((ctx) => ctx.outbox.enqueue([message]));
+    const pendentesAntes = await uow.read((ctx) => ctx.outbox.pendingCount());
+
+    await uow.run((ctx) => ctx.outbox.abandon(message.id, "corpo acima do limite"));
+
+    expect((await claim()).map((m) => m.id)).not.toContain(message.id);
+    expect(await uow.read((ctx) => ctx.outbox.pendingCount())).toBe(pendentesAntes - 1);
+  });
+
+  it("abandonExhausted varre o que esgotou tentativas sem lease ativo", async () => {
     const message = await eventoPendente();
     await uow.run((ctx) => ctx.outbox.enqueue([message]));
 
-    const agora = new Date();
-    message.scheduleRetry(agora);
-    await uow.run((ctx) => ctx.outbox.scheduleRetry(message));
+    // Simula publisher que morreu varias vezes: cada reivindicacao conta uma
+    // tentativa e o lease expira sozinho.
+    for (let i = 0; i < 3; i += 1) {
+      await claim({ leaseSeconds: 0 });
+    }
 
-    const antes = await uow.run((ctx) => ctx.outbox.claimDue(100, agora));
-    expect(antes.map((m) => m.id)).not.toContain(message.id);
-
-    const depois = await uow.run((ctx) =>
-      ctx.outbox.claimDue(100, new Date(agora.getTime() + 2_000)),
-    );
-    expect(depois.map((m) => m.id)).toContain(message.id);
-    expect(depois.find((m) => m.id === message.id)?.attempts).toBe(1);
+    const varridas = await uow.run((ctx) => ctx.outbox.abandonExhausted(3));
+    expect(varridas).toBeGreaterThan(0);
+    expect((await claim()).map((m) => m.id)).not.toContain(message.id);
   });
 
-  it("conta pendentes e mede o lag da mais antiga", async () => {
+  it("conta pendentes e mede o atraso da mais antiga", async () => {
     const message = await eventoPendente();
     await uow.run((ctx) => ctx.outbox.enqueue([message]));
 

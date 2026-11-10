@@ -115,20 +115,65 @@ export interface InboxRepository {
   markProcessed(message: InboxMessage): Promise<void>;
 }
 
+
+export interface ClaimOptions {
+  readonly limit: number;
+  /** Por quanto tempo a reivindicacao vale. Expirado, outro publisher assume. */
+  readonly leaseSeconds: number;
+  /** Quem reivindicou — para diagnostico, nao para exclusao. */
+  readonly workerId: string;
+  /** Acima disto a mensagem nao e mais reivindicada. */
+  readonly maxAttempts: number;
+}
+
 export interface OutboxRepository {
   /** Grava na mesma transacao SQL do dinheiro. Nao publica nada. */
   enqueue(messages: readonly OutboxMessage[]): Promise<void>;
 
   /**
-   * Reivindica um lote com `FOR UPDATE SKIP LOCKED`: publishers concorrentes
-   * pegam lotes disjuntos sem se bloquear.
+   * Reivindica um lote com `FOR UPDATE SKIP LOCKED`, grava lease e **conta a
+   * tentativa**.
+   *
+   * Contar na reivindicacao, e nao na falha, e deliberado: um publisher que
+   * morre entre publicar e marcar nunca chegaria a registrar a tentativa, e a
+   * linha seria reenviada a cada expiracao de lease para sempre, com o backoff
+   * congelado em zero.
+   *
+   * Todas as comparacoes de tempo usam o **relogio do banco**. Comparar o
+   * relogio de um processo contra um timestamp escrito por outro deixa a
+   * corretude a merce de clock skew: um relogio adiantado prende evento
+   * confirmado, um atrasado faz peers reivindicarem linha que um worker vivo
+   * esta publicando — e aí a duplicacao limitada vira loop.
    */
-  claimDue(limit: number, now: Date): Promise<readonly OutboxMessage[]>;
+  claimDue(options: ClaimOptions): Promise<readonly OutboxMessage[]>;
 
-  markPublished(message: OutboxMessage): Promise<void>;
-  scheduleRetry(message: OutboxMessage): Promise<void>;
+  /** Marca publicada (com o relogio do banco) e libera o lease. */
+  markPublished(id: string): Promise<void>;
+
+  /**
+   * Agenda a proxima tentativa e libera o lease, para que outro publisher
+   * possa assumir. O atraso vem do dominio; o instante absoluto, do banco.
+   */
+  deferRetry(id: string, delayMs: number, reason: string): Promise<void>;
+
+  /**
+   * Desiste da mensagem: ela sai da fila de reivindicacao **e** da metrica de
+   * atraso. Sem isso, um evento impublicavel (corpo acima do limite do broker,
+   * fila errada) seria reenviado para sempre e fixaria o outbox lag no teto,
+   * mascarando um publisher realmente travado.
+   */
+  abandon(id: string, reason: string): Promise<void>;
+
+  /**
+   * Abandona o que esgotou tentativas e nao esta reivindicado. Devolve quantas.
+   *
+   * Necessario porque um publisher que morre repetidamente consome as
+   * tentativas sem nunca executar o caminho de desistencia.
+   */
+  abandonExhausted(maxAttempts: number): Promise<number>;
 
   pendingCount(): Promise<number>;
+
   /** Idade da pendencia mais antiga em ms — a metrica de outbox lag. */
   oldestPendingAgeMs(now: Date): Promise<number>;
 }

@@ -776,7 +776,9 @@ describe("outbox_messages", () => {
       "select indexdef from pg_indexes where indexname = 'outbox_messages_claimable'",
     )) as Array<{ indexdef: string }>;
     expect(linhas).toHaveLength(1);
-    expect(linhas[0]?.indexdef).toContain("WHERE (published_at IS NULL)");
+    // Parcial nas duas condicoes: publicada e abandonada saem da fila.
+    expect(linhas[0]?.indexdef).toContain("published_at IS NULL");
+    expect(linhas[0]?.indexdef).toContain("abandoned_at IS NULL");
     expect(linhas[0]?.indexdef).toContain("next_attempt_at");
   });
 });
