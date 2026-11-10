@@ -22,6 +22,16 @@ const schema = z.object({
   SQS_ENDPOINT: z.string().url(),
   SQS_QUEUE_URL: z.string().url(),
   SQS_DLQ_URL: z.string().url(),
+  /**
+   * Destino dos eventos de integracao. O enunciado define a fila de entrada e
+   * a DLQ dela; os eventos publicados pela outbox precisam de um destino
+   * proprio, senao nao ha onde publicar.
+   *
+   * A DLQ dos eventos nao aparece aqui de proposito: ela e ligada por
+   * RedrivePolicy na criacao da fila, e nenhum codigo da aplicacao a endereca.
+   * Exigir uma variavel sem efeito seria so uma forma de o processo nao subir.
+   */
+  SQS_EVENTS_QUEUE_URL: z.string().url(),
 
   AUTH_ENABLED: z
     .enum(["true", "false"])
