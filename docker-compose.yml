@@ -41,6 +41,16 @@ x-api: &api
     start_period: 15s
   restart: unless-stopped
 
+# Worker nao recebe trafego de balanceador, entao readiness nao e a pergunta
+# certa para ele: checa liveness, que e o que diz se o processo esta de pe e
+# com o event loop respondendo.
+x-worker-healthcheck: &worker-healthcheck
+  test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health/live"]
+  interval: 10s
+  timeout: 5s
+  retries: 6
+  start_period: 10s
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -95,7 +105,10 @@ services:
     volumes:
       - ./docker/keycloak/realm-jungle.json:/opt/keycloak/data/import/realm-jungle.json:ro
 
-  # O consumer nao abre porta: nao tem servidor HTTP, so o loop de long polling.
+  # O consumer serve so observabilidade — `/health/live` e `/metrics` —, nao
+  # endpoint de negocio: metrica que existe apenas no processo da API deixa
+  # cego justamente o lado onde a falha e silenciosa.
+  #
   # `stop_grace_period` precisa caber o dreno — tempo de concluir as mensagens
   # em andamento depois do SIGTERM, em vez de ser morto no meio.
   consumer:
@@ -103,8 +116,8 @@ services:
     environment:
       <<: *api-env
       APP_ROLE: consumer
-    healthcheck:
-      disable: true
+    healthcheck: *worker-healthcheck
+    ports: ["3011:3000"]
     stop_grace_period: 40s
 
   # Publisher da outbox. Duas replicas de proposito: o SKIP LOCKED e o lease
@@ -115,8 +128,8 @@ services:
     environment:
       <<: *api-env
       APP_ROLE: outbox
-    healthcheck:
-      disable: true
+    healthcheck: *worker-healthcheck
+    ports: ["3012:3000"]
     stop_grace_period: 20s
 
   outbox-2:
@@ -124,8 +137,8 @@ services:
     environment:
       <<: *api-env
       APP_ROLE: outbox
-    healthcheck:
-      disable: true
+    healthcheck: *worker-healthcheck
+    ports: ["3013:3000"]
     stop_grace_period: 20s
 
   # Worker que reprocessa referencia ausente.
@@ -139,8 +152,8 @@ services:
     environment:
       <<: *api-env
       APP_ROLE: reference
-    healthcheck:
-      disable: true
+    healthcheck: *worker-healthcheck
+    ports: ["3014:3000"]
     stop_grace_period: 20s
 
   api-1:
