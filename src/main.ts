@@ -5,13 +5,10 @@ import { NestFactory } from "@nestjs/core";
 import { LOGGER, type Logger } from "./application/ports/logger";
 import { WagerTransactionConsumer } from "./application/wagering/consume-wager-transactions";
 import { OutboxPublisherWorker } from "./application/wagering/publish-outbox";
+import { PendingReferenceWorker } from "./application/wagering/retry-pending-reference";
 import { AppModule } from "./app.module";
 import { loadEnv, type Env } from "./config/env";
 import { DomainExceptionFilter } from "./infrastructure/http/domain-exception.filter";
-
-const NAO_IMPLEMENTADO: Record<string, string> = {
-  reference: "Fase 8",
-};
 
 async function runApi(env: Env): Promise<void> {
   const app = await NestFactory.create(AppModule.register(env), { bufferLogs: false });
@@ -69,28 +66,25 @@ async function runConsumer(env: Env): Promise<void> {
   await consumer.start();
 }
 
-/**
- * Worker da outbox. Como o consumer, nao abre servidor HTTP e drena no
- * SIGTERM: parar no meio de um ciclo deixaria mensagens reivindicadas com
- * lease valido, inativas ate ele expirar.
- */
-async function runOutboxPublisher(env: Env): Promise<void> {
-  const app = await NestFactory.createApplicationContext(AppModule.register(env), {
-    logger: false,
-  });
-  const worker = app.get(OutboxPublisherWorker);
-  const logger = app.get<Logger>(LOGGER);
-
+/** Encerramento limpo compartilhado pelos workers sem servidor HTTP. */
+function instalaEncerramento(
+  logger: Logger,
+  parar: () => Promise<void>,
+  fechar: () => Promise<void>,
+): void {
   let encerrando = false;
   const encerra = async (signal: string): Promise<void> => {
     if (encerrando) return;
     encerrando = true;
-    logger.info("sinal recebido, encerrando o publisher", { signal });
-    await worker.stop();
-    await app.close();
+    logger.info("sinal recebido, encerrando", { signal });
+    await parar();
+    await fechar();
     process.exit(0);
   };
 
+  // O `.catch` nao e cosmetico: sem ele, um stop() que rejeita vira unhandled
+  // rejection, o fechamento nao roda, e o container fica pendurado ate o
+  // SIGKILL do fim do grace period.
   const trata = (signal: string) => (): void => {
     encerra(signal).catch((erro: unknown) => {
       logger.error("falha ao encerrar; saindo com erro", {
@@ -103,7 +97,35 @@ async function runOutboxPublisher(env: Env): Promise<void> {
 
   process.on("SIGTERM", trata("SIGTERM"));
   process.on("SIGINT", trata("SIGINT"));
+}
 
+/**
+ * Worker que reprocessa referencia ausente. Sem servidor HTTP.
+ */
+async function runPendingReferenceWorker(env: Env): Promise<void> {
+  const app = await NestFactory.createApplicationContext(AppModule.register(env), {
+    logger: false,
+  });
+  const worker = app.get(PendingReferenceWorker);
+  const logger = app.get<Logger>(LOGGER);
+
+  instalaEncerramento(logger, () => worker.stop(), () => app.close());
+  await worker.start();
+}
+
+/**
+ * Worker da outbox. Como o consumer, nao abre servidor HTTP e drena no
+ * SIGTERM: parar no meio de um ciclo deixaria mensagens reivindicadas com
+ * lease valido, inativas ate ele expirar.
+ */
+async function runOutboxPublisher(env: Env): Promise<void> {
+  const app = await NestFactory.createApplicationContext(AppModule.register(env), {
+    logger: false,
+  });
+  const worker = app.get(OutboxPublisherWorker);
+  const logger = app.get<Logger>(LOGGER);
+
+  instalaEncerramento(logger, () => worker.stop(), () => app.close());
   await worker.start();
 }
 
@@ -117,10 +139,8 @@ async function bootstrap(): Promise<void> {
       return runConsumer(env);
     case "outbox":
       return runOutboxPublisher(env);
-    default: {
-      const fase = NAO_IMPLEMENTADO[env.APP_ROLE];
-      throw new Error(`APP_ROLE=${env.APP_ROLE} ainda nao implementado (chega na ${fase}).`);
-    }
+    case "reference":
+      return runPendingReferenceWorker(env);
   }
 }
 

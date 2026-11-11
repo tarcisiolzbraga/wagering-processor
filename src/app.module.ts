@@ -6,14 +6,16 @@ import { CLOCK, type Clock } from "./application/ports/clock";
 import { EVENT_PUBLISHER, type EventPublisher } from "./application/ports/event-publisher";
 import { LOGGER, type Logger } from "./application/ports/logger";
 import { MESSAGE_QUEUE, type MessageQueue } from "./application/ports/message-queue";
-import { ID_GENERATOR } from "./application/ports/id-generator";
+import { ID_GENERATOR, type IdGenerator } from "./application/ports/id-generator";
 import { RECONCILIATION_ALARM } from "./application/ports/reconciliation-alarm";
 import { UNIT_OF_WORK, type UnitOfWork } from "./application/ports/unit-of-work";
+import { WagerTransactionApplier } from "./application/wagering/apply-wager-transaction";
 import { WagerTransactionConsumer } from "./application/wagering/consume-wager-transactions";
 import {
   defaultOutboxOptions,
   OutboxPublisherWorker,
 } from "./application/wagering/publish-outbox";
+import { PendingReferenceWorker } from "./application/wagering/retry-pending-reference";
 import { SubmitWagerTransaction } from "./application/wagering/submit-wager-transaction";
 import { WagerTransactionQueries } from "./application/wagering/wager-transaction-queries";
 import { OpenWallet } from "./application/wallets/open-wallet";
@@ -93,10 +95,30 @@ export class AppModule implements NestModule {
         },
 
         {
+          provide: WagerTransactionApplier,
+          useFactory: (ids: IdGenerator) => new WagerTransactionApplier(ids),
+          inject: [ID_GENERATOR],
+        },
+        {
           provide: SubmitWagerTransaction,
-          useFactory: (uow: UnitOfWork, clock, ids) =>
-            new SubmitWagerTransaction(uow, clock, ids),
-          inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR],
+          useFactory: (
+            uow: UnitOfWork,
+            clock: Clock,
+            ids: IdGenerator,
+            applier: WagerTransactionApplier,
+          ) => new SubmitWagerTransaction(uow, clock, ids, applier),
+          inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR, WagerTransactionApplier],
+        },
+        {
+          provide: PendingReferenceWorker,
+          useFactory: (
+            uow: UnitOfWork,
+            applier: WagerTransactionApplier,
+            clock: Clock,
+            ids: IdGenerator,
+            logger: Logger,
+          ) => new PendingReferenceWorker(uow, applier, clock, ids, logger),
+          inject: [UNIT_OF_WORK, WagerTransactionApplier, CLOCK, ID_GENERATOR, LOGGER],
         },
         {
           provide: OpenWallet,

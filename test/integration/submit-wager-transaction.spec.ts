@@ -7,6 +7,7 @@ import { OpenWallet, OpenWalletOutcome } from "../../src/application/wallets/ope
 import { ReconcileWallet } from "../../src/application/wallets/reconcile-wallet";
 import { WalletQueries } from "../../src/application/wallets/wallet-queries";
 import { WagerTransactionQueries } from "../../src/application/wagering/wager-transaction-queries";
+import { WagerTransactionApplier } from "../../src/application/wagering/apply-wager-transaction";
 import {
   SubmitOutcome,
   SubmitWagerTransaction,
@@ -59,7 +60,7 @@ beforeAll(async () => {
   uow = new MikroUnitOfWork(orm);
   clock = new FixedClock();
   alarme = new AlarmeEspiao();
-  submit = new SubmitWagerTransaction(uow, clock, ids);
+  submit = new SubmitWagerTransaction(uow, clock, ids, new WagerTransactionApplier(ids));
   open = new OpenWallet(uow, clock, ids);
   walletQueries = new WalletQueries(uow);
   txQueries = new WagerTransactionQueries(uow);
