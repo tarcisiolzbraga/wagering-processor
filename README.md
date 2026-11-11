@@ -347,6 +347,43 @@ O enunciado define as duas primeiras. As de eventos existem porque os eventos pu
 
 Criadas automaticamente quando o LocalStack fica pronto, por `docker/localstack/init-queues.sh`. O script é idempotente, então reiniciar o container não quebra nada.
 
+## Teste de carga
+
+Diferencial opcional. Exige o stack de pé (`bun run compose:up`):
+
+```bash
+bun run test:load
+# configurável: LOAD_CONCURRENCY, LOAD_DURATION_SECONDS, LOAD_WARMUP_SECONDS,
+#               LOAD_API_URLS, LOAD_PUBLISHER_URLS
+```
+
+Gera carga nas três instâncias de API alternadamente, sem balanceador, e salva o relatório bruto em `test/load/resultados/`. Dois relatórios estão versionados — são as duas execuções que embasam os números abaixo.
+
+**Ambiente medido:** Intel Core 7 240H, 16 núcleos, 31 GB · Bun 1.4.4 · Docker 29.9.2 · `postgres:16-alpine` · `localstack/localstack:3` · 3 instâncias de API, 2 publishers, 1 consumer, 1 worker de referência — todos na mesma máquina do gerador de carga, que portanto disputa CPU com o sistema medido. Os números são piso, não teto.
+
+**Metodologia:** laço fechado com 32 trabalhadores; 3 s de aquecimento descartado e 15 s de medição por perfil; percentil por rank mais próximo, sem interpolação; saldo pré-provisionado para que recusa de negócio não seja confundida com erro; a outbox é drenada **entre** perfis, para que o atraso reportado seja o que aquele perfil gerou. Recusa por saldo (`422`) não conta como erro — erro é 5xx e queda de conexão. Cada perfil termina conferindo, pela reconciliação real, que o saldo de toda carteira usada fecha com o ledger.
+
+| Perfil | ops/s | p50 | p95 | p99 | Erro infra | Conflitos de lock | Outbox lag (pico) | Saldo = ledger |
+|---|---|---|---|---|---|---|---|---|
+| Carteiras distintas (32 carteiras) | 810 – 962 | 32–38 ms | 56–68 ms | 65–81 ms | 0% | 0 | 9,2 – 11,8 s | 32/32 |
+| Carteira quente (1 carteira) | 184 – 188 | 170–172 ms | 194–215 ms | 207–254 ms | 0% | 0 | 0,2 – 0,3 s | 1/1 |
+| Replay (mesma chave) | 289 – 290 | 109 ms | 127 ms | 137–141 ms | 0% | 0 | 0 s | 1/1 |
+| Saldo escasso (recusa) | 239 – 252 | 126–129 ms | 145–159 ms | 153–172 ms | 0% | 0 | 0,2 s | 1/1 |
+
+### Análise
+
+**Reprodutibilidade diz onde está o gargalo.** Os perfis limitados pelo lock da carteira repetem dentro de 2% entre execuções (184/188 e 289/290 ops/s); o perfil de teto oscila 17% (810/962). A diferença é o próprio método: quando o limite é a seção crítica no banco, o número é estável; quando é CPU, o gerador de carga disputa os mesmos núcleos do sistema medido e a medição fica barulhenta. Em bancada dedicada, o teto seria maior e menos variável — a contenção, igual.
+
+**A latência sob contenção é fila, não lentidão.** Na carteira quente, 32 trabalhadores dividindo ~186 ops/s dão ~172 ms de permanência média por Little's law; o p50 medido foi 170–172 ms. O mesmo casa nos quatro perfis dentro de 3%. O tempo serializado por operação sai em ~5,4 ms: é o tamanho da seção crítica, e é ele que define o teto de **uma** carteira.
+
+**O núcleo financeiro não errou uma vez.** Zero 5xx, zero conflito de lock, zero violação de versão em ~46 mil operações nas duas execuções. E a afirmação não depende de ninguém ter recebido erro: cada perfil fecha com a reconciliação conferindo que `saldo == soma do ledger` em toda carteira que ele tocou — perda de dinheiro sob carga não devolve 5xx, devolve 200 com o saldo errado.
+
+**O gargalo de propagação aparece só no perfil de teto.** A 810–962 ops/s, cada operação enfileira dois eventos: ~1.900 eventos/s contra dois publishers com lote de 10, e o atraso chega a 11,8 s. A 186 ops/s o mesmo par de publishers fica em 0,2 s. Nada se perde — o evento commitou junto com o dinheiro —, e a correção é configuração, não desenho: lote maior e mais publishers, que é exatamente o que o `SKIP LOCKED` com lease permite escalar.
+
+**O replay não escreve na outbox**, e isso aparece: 0 s de atraso no perfil. Ele é 1,5× o throughput da carteira quente (290 contra 186), mas ainda adquire o lock da carteira, porque o lock vem **antes** da checagem de idempotência — escolha feita para ter uma única seção crítica e evitar a elevação de lock que gerava deadlock. Responder replay pelo `observed_balance` da própria linha, sem lock, é a otimização óbvia e está registrada como trabalho futuro.
+
+**Recusar custa quase o mesmo que aplicar** (245 contra 186 ops/s): a transação `REJECTED` também é persistida, então o caminho de recusa é uma escrita com lock, não um atalho.
+
 ## Estrutura
 
 ```
