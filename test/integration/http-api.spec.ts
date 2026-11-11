@@ -88,7 +88,9 @@ describe("health", () => {
     const resposta = await pede("GET", "/health/ready");
     expect(resposta.status).toBe(200);
     const probes = resposta.body["probes"] as Array<{ name: string; ok: boolean }>;
-    expect(probes.map((p) => p.name).sort()).toEqual(["postgres", "sqs"]);
+    // `schema` entra aqui: banco alcancavel com migration pendente nao e
+    // pronto para receber trafego.
+    expect(probes.map((p) => p.name).sort()).toEqual(["postgres", "schema", "sqs"]);
     expect(probes.every((p) => p.ok)).toBe(true);
   });
 });
