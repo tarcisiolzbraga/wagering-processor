@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { canonicalJson } from "../../domain/shared/canonical-json";
 import { Money, type MoneyProps } from "../../domain/money/money";
 import type { WagerTransactionKind } from "../../domain/wagering/wager-transaction-kind";
 
@@ -22,29 +23,6 @@ export interface HashableWagerPayload {
 }
 
 /**
- * Serializa de forma canonica: chaves ordenadas, sem espaco, campos ausentes
- * omitidos.
- *
- * Canonico porque o mesmo pedido serializado em ordem diferente de chaves tem
- * que gerar o mesmo hash. Sem isso, o provedor trocar de biblioteca HTTP
- * viraria "conflito de idempotencia".
- */
-function canonicalize(value: unknown): string {
-  if (value === null) return "null";
-  if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
-
-  if (typeof value === "object") {
-    const entradas = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([k, v]) => `${JSON.stringify(k)}:${canonicalize(v)}`);
-    return `{${entradas.join(",")}}`;
-  }
-
-  return JSON.stringify(value) ?? "null";
-}
-
-/**
  * `sha256(JSON canonico)` em hexadecimal.
  *
  * O valor monetario e **normalizado por `Money`** antes de entrar no hash, para
@@ -64,7 +42,7 @@ export function computePayloadHash(payload: HashableWagerPayload): string {
       ? payload.referenceExternalTransactionId
       : undefined;
 
-  const canonico = canonicalize({
+  const canonico = canonicalJson({
     providerId: payload.providerId,
     externalTransactionId: payload.externalTransactionId,
     playerId: payload.playerId,
@@ -80,4 +58,4 @@ export function computePayloadHash(payload: HashableWagerPayload): string {
 }
 
 /** Exposto para o teste e para a documentacao do algoritmo. */
-export const canonicalizeForTest = canonicalize;
+export const canonicalizeForTest = canonicalJson;

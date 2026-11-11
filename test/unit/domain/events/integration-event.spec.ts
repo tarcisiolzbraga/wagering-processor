@@ -234,3 +234,48 @@ describe("WagerTransactionPendingReference", () => {
     expect(data.pendingSince).toBe(at.toISOString());
   });
 });
+
+describe("IntegrationEvent — serializacao canonica", () => {
+  /** Chaves de um objeto, recursivamente, com o caminho ate elas. */
+  function caminhos(valor: unknown, prefixo = ""): Array<[string, string[]]> {
+    if (valor === null || typeof valor !== "object" || Array.isArray(valor)) return [];
+    const chaves = Object.keys(valor as Record<string, unknown>);
+    return [
+      [prefixo || "(raiz)", chaves],
+      ...chaves.flatMap((c) =>
+        caminhos((valor as Record<string, unknown>)[c], `${prefixo}${prefixo ? "." : ""}${c}`),
+      ),
+    ];
+  }
+
+  it("as chaves saem ordenadas, do envelope ao data", () => {
+    // Dois publicadores que reivindiquem o mesmo evento produzem bytes
+    // identicos, e quem compara payloads do outro lado nao ve diferenca que
+    // nao existe.
+    const processada = transacao();
+    processada.markProcessed({ observedBalance: brl("75.00"), at });
+
+    const rejeitada = transacao();
+    rejeitada.reject({ code: FailureCode.InsufficientFunds, observedBalance: brl("1.00"), at });
+
+    const pendente = transacao(Kind.Rollback);
+    pendente.markPendingReference(at);
+
+    for (const evento of [
+      WagerTransactionProcessed.from(processada, ctx),
+      WagerTransactionRejected.from(rejeitada, ctx),
+      WagerTransactionPendingReference.from(pendente, ctx),
+    ]) {
+      for (const [onde, chaves] of caminhos(evento.toJSON())) {
+        expect([onde, chaves]).toEqual([onde, [...chaves].sort()]);
+      }
+    }
+  });
+
+  it("serializar duas vezes da exatamente os mesmos bytes", () => {
+    const tx = transacao();
+    tx.markProcessed({ observedBalance: brl("75.00"), at });
+    const evento = WagerTransactionProcessed.from(tx, ctx);
+    expect(JSON.stringify(evento.toJSON())).toBe(JSON.stringify(evento.toJSON()));
+  });
+});
