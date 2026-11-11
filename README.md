@@ -361,6 +361,10 @@ Gera carga nas três instâncias de API alternadamente, sem balanceador, e salva
 
 **Ambiente medido:** Intel Core 7 240H, 16 núcleos, 31 GB · Bun 1.4.4 · Docker 29.9.2 · `postgres:16-alpine` · `localstack/localstack:3` · 3 instâncias de API, 2 publishers, 1 consumer, 1 worker de referência — todos na mesma máquina do gerador de carga, que portanto disputa CPU com o sistema medido. Os números são piso, não teto.
 
+![Relatório do teste de carga: latência por perfil, throughput nas duas execuções, atraso da outbox no tempo e composição por classe de desfecho](docs/teste-de-carga.png)
+
+*As quatro figuras acima são o relatório renderizado a partir dos dois arquivos de resultado versionados em `test/load/resultados/`.*
+
 **Metodologia:** laço fechado com 32 trabalhadores; 3 s de aquecimento descartado e 15 s de medição por perfil; percentil por rank mais próximo, sem interpolação; saldo pré-provisionado para que recusa de negócio não seja confundida com erro; a outbox é drenada **entre** perfis, para que o atraso reportado seja o que aquele perfil gerou. Recusa por saldo (`422`) não conta como erro — erro é 5xx e queda de conexão. Cada perfil termina conferindo, pela reconciliação real, que o saldo de toda carteira usada fecha com o ledger.
 
 | Perfil | ops/s | p50 | p95 | p99 | Erro infra | Conflitos de lock | Outbox lag (pico) | Saldo = ledger |
