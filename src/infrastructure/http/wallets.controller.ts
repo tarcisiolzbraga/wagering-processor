@@ -10,6 +10,7 @@ import {
   Query,
   Req,
   Res,
+  UseGuards,
 } from "@nestjs/common";
 import type { Request, Response } from "express";
 
@@ -17,6 +18,7 @@ import { assertUuid } from "../../application/shared/assert-uuid";
 import { OpenWallet, OpenWalletOutcome } from "../../application/wallets/open-wallet";
 import { ReconcileWallet } from "../../application/wallets/reconcile-wallet";
 import { WalletQueries } from "../../application/wallets/wallet-queries";
+import { AuthGuard } from "./auth.guard";
 import { correlationIdOf, type WithCorrelation } from "./correlation-id.middleware";
 import {
   ledgerQuerySchema,
@@ -27,6 +29,7 @@ import {
 import { ZodValidationPipe } from "./zod-validation.pipe";
 
 @Controller("wallets")
+@UseGuards(AuthGuard)
 export class WalletsController {
   constructor(
     private readonly openWallet: OpenWallet,

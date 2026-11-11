@@ -23,6 +23,8 @@ import { OpenWallet } from "./application/wallets/open-wallet";
 import { ReconcileWallet } from "./application/wallets/reconcile-wallet";
 import { WalletQueries } from "./application/wallets/wallet-queries";
 import { ENV, type Env } from "./config/env";
+import { TOKEN_VERIFIER } from "./infrastructure/auth/principal";
+import { JoseTokenVerifier } from "./infrastructure/auth/jose-token-verifier";
 import { correlationIdMiddleware } from "./infrastructure/http/correlation-id.middleware";
 import { HealthController } from "./infrastructure/http/health/health.controller";
 import { ReadinessService } from "./infrastructure/http/health/readiness.service";
@@ -87,6 +89,17 @@ export class AppModule implements NestModule {
         ReadinessService,
 
         { provide: LOGGER, useValue: createLogger(env) },
+        {
+          provide: TOKEN_VERIFIER,
+          useFactory: () =>
+            new JoseTokenVerifier(
+              env.KEYCLOAK_ISSUER_URL,
+              env.KEYCLOAK_AUDIENCE,
+              env.KEYCLOAK_JWKS_URL === undefined
+                ? undefined
+                : new URL(env.KEYCLOAK_JWKS_URL),
+            ),
+        },
         {
           provide: METRICS,
           // Uma instancia por processo, com `role` como label default: a mesma
