@@ -97,6 +97,32 @@ describe("PinoLogger — redacao", () => {
     // O que nao e financeiro continua legivel.
     expect(linhas[0]!).toContain("wallet-1");
   });
+
+  it("redige todos os campos monetarios tambem aninhados", async () => {
+    // A lista aninhada tem que cobrir a mesma coisa que a de primeiro nivel:
+    // um campo coberto na raiz e exposto um nivel abaixo e pior que nenhuma
+    // redacao, porque a afirmacao de que o log nao tem dinheiro deixa de valer
+    // sem ninguem notar.
+    const { linhas, destino } = coletor();
+    PinoLogger.create("info", {}, destino).info("operacao", {
+      wallet: {
+        money: { amount: "1.11", currency: "BRL" },
+        balance: { amount: "2.22", currency: "BRL" },
+        balanceBefore: { amount: "3.33", currency: "BRL" },
+        balanceAfter: { amount: "4.44", currency: "BRL" },
+        initialBalance: { amount: "5.55", currency: "BRL" },
+        observedBalance: { amount: "6.66", currency: "BRL" },
+        difference: { amount: "7.77", currency: "BRL" },
+        amount: "8.88",
+        payload: { tudo: "9.99" },
+      },
+    });
+
+    const bruto = linhas[0]!;
+    for (const valor of ["1.11", "2.22", "3.33", "4.44", "5.55", "6.66", "7.77", "8.88", "9.99"]) {
+      expect(bruto).not.toContain(valor);
+    }
+  });
 });
 
 describe("Metrics — transacoes e latencia", () => {
