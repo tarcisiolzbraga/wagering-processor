@@ -2,7 +2,7 @@
 
 O que foi decidido, por quê, e o que se perdeu em troca. Setup e comandos estão no [`README.md`](./README.md).
 
-**Estado:** implementação completa, 540 testes — unidade, integração contra PostgreSQL e LocalStack reais, e concorrência com múltiplos processos.
+**Estado:** implementação completa, 547 testes — unidade, integração contra PostgreSQL e LocalStack reais, e concorrência com múltiplos processos.
 
 ---
 
@@ -403,7 +403,9 @@ Validar o token prova apenas que quem chama tem *algum* token válido. Sem mais 
 
 ### Health checks
 
-`/health/live` responde "me reinicia?" e não consulta dependência externa. `/health/ready` responde "me manda tráfego?" e checa PostgreSQL e SQS alcançáveis, com a latência de cada probe. Separados porque, juntos, uma indisponibilidade momentânea do banco causaria restart loop.
+`/health/live` responde "me reinicia?" e não consulta dependência externa. `/health/ready` responde "me manda tráfego?" e checa três coisas com a latência de cada uma: PostgreSQL alcançável, **schema aplicado** e SQS alcançável. Separados porque, juntos, uma indisponibilidade momentânea do banco causaria restart loop.
+
+**Banco alcançável não é banco pronto.** Com `select 1` sozinho, uma instância apontada para um banco sem migrations respondia `200 ready` e só falhava na primeira operação de negócio, com 500. A probe pergunta ao migrator se há migration pendente e falha nomeando quais. O par disso no Compose é o serviço `migrate`, que aplica as migrations e sai, com os demais serviços dependendo da conclusão dele — serviço próprio porque três réplicas subindo juntas disputariam a mesma migration.
 
 Os dois ficam abertos, sem autenticação: readiness precisa responder com o IdP fora.
 
