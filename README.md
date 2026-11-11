@@ -41,6 +41,9 @@ bun run compose:down
 | Serviço | Porta | Observação |
 |---|---|---|
 | `api-1` / `api-2` / `api-3` | 3001 / 3002 / 3003 | três instâncias, para exercitar concorrência real |
+| `consumer` | 3011 | só `/metrics` e health checks |
+| `outbox-1` / `outbox-2` | 3012 / 3013 | só `/metrics` e health checks |
+| `reference` | 3014 | só `/metrics` e health checks |
 | PostgreSQL | 5433 | `wagering` / `wagering` / db `wagering`. 5433 no host porque a 5432 costuma estar ocupada; dentro da rede do Compose é 5432 |
 | LocalStack (SQS) | 4566 | filas criadas no boot pelo init script |
 | Keycloak | 8080 | admin `admin` / `admin`, realm `jungle` |
@@ -157,6 +160,8 @@ GET /health/ready    # PostgreSQL e SQS alcançáveis, com latência de cada pro
 
 Os dois são abertos, sem autenticação: readiness precisa responder mesmo com o Keycloak fora.
 
+Os workers (`consumer`, `outbox`, `reference`) servem os health checks e `/metrics`, e nenhum endpoint de negócio. O healthcheck deles no Compose usa `/health/live`: readiness responde "posso receber tráfego do balanceador", pergunta que não se aplica a quem não recebe tráfego.
+
 `/health/ready` devolve `200` quando tudo responde e `503` quando alguma probe falha, sempre com o detalhe de cada uma:
 
 ```json
@@ -167,6 +172,56 @@ Os dois são abertos, sem autenticação: readiness precisa responder mesmo com 
     { "name": "sqs",      "ok": true, "latencyMs": 11 }
   ]
 }
+```
+
+## Observabilidade
+
+### Logs
+
+JSON estruturado em stdout, uma linha por submissão, com os campos de correlação:
+
+```json
+{"level":"info","time":"2026-11-11T11:06:22.289Z","role":"api","pid":1,
+ "correlationId":"fb160c24-…","transactionId":"01a1ca49-…","walletId":"01a1ca49-…",
+ "providerId":"provider-a","externalTransactionId":"external-a226…",
+ "kind":"BET","source":"API","outcome":"PROCESSED","durationMs":4,
+ "msg":"transacao submetida"}
+```
+
+Valor monetário é redigido (`money`, `balance`, `amount`, `payload`, `initialBalance`, `difference` e os mesmos campos um nível abaixo viram `[redigido]`). Mensagem de erro de domínio **não** é logada, porque cita o valor submetido e a redação age sobre campo, não sobre texto dentro de string — o nome da classe do erro e o `failureCode` ficam no lugar dela.
+
+O log do Nest e o do MikroORM também passam pelo pino, então **toda** linha do processo é JSON. Cada linha leva `hostname` (em container, o id), que é o que distingue as três réplicas de API.
+
+`LOG_LEVEL` aceita `trace|debug|info|warn|error|silent`. `silent` existe para a suíte de teste.
+
+### Métricas
+
+```http
+GET /metrics     # formato texto do Prometheus, sem auth, em todos os papéis
+```
+
+| Série | Tipo | Labels |
+|---|---|---|
+| `wager_transactions_total` | counter | `outcome`, `kind`, `source`, `failure_code` |
+| `wager_transaction_duration_seconds` | histograma | `outcome`, `source` |
+| `wager_duplicates_total` | counter | `kind` (`idempotency_replay`, `idempotency_conflict`, `external_transaction`, `inbox_message`) |
+| `wager_retries_total` | counter | `subject` (`queue_message`, `outbox_event`, `reference_resolution`) |
+| `wager_dead_letter_total` | counter | `reason` (`invalid_envelope`, `permanent_failure`, `delivery_limit`) |
+| `wager_lock_conflicts_total` | counter | `reason` (`deadlock`, `serialization`, `version_mismatch`) |
+| `wager_reconciliation_divergences_total` | counter | — |
+| `wager_outbox_lag_seconds` | gauge | — · **só no papel `outbox`** |
+
+Todas carregam `role` (`api`, `consumer`, `outbox`, `reference`) como label default, mais as métricas de processo do `prom-client`.
+
+Um replay idempotente conta em `wager_duplicates_total`, **não** em `wager_transactions_total`: a série precisa fechar com o ledger. Pelo mesmo motivo, as transações aplicadas pelo worker de referência e o `OPENING` da abertura de carteira entram na série. Payload inválido conta como `outcome="INVALID"`, separado de `ERROR`, que é falha do sistema.
+
+`wager_outbox_lag_seconds` só aparece no processo que publica a outbox: um gauge registrado nasce em zero, e exportá-lo nos outros papéis faria um alerta em `avg`/`min` sobre publisher parado ler ~0.
+
+Nenhum valor monetário aparece em label ou em valor de série.
+
+```bash
+curl -s localhost:3001/metrics | grep wager_transactions_total
+curl -s localhost:3012/metrics | grep wager_outbox_lag_seconds
 ```
 
 ## Consumer SQS
@@ -250,7 +305,7 @@ Criadas automaticamente quando o LocalStack fica pronto, por `docker/localstack/
 src/
   domain/           TypeScript puro — sem NestJS, sem ORM, sem SQS
   application/      casos de uso e portas
-  infrastructure/   MikroORM, SQS, HTTP, Keycloak
+  infrastructure/   MikroORM, SQS, HTTP, observabilidade, Keycloak
 test/
   unit/             sem infraestrutura
   integration/      PostgreSQL e LocalStack reais em containers
