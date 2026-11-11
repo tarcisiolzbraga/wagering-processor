@@ -68,6 +68,27 @@ bun run compose:down
 
 Os testes de integração e concorrência precisam da stack no ar (`bun run compose:up`).
 
+### Testes de concorrência
+
+`bun run test:concurrency` sobe **processos Bun de verdade** — não `Promise.all` no mesmo event loop — e os alinha numa barreira TCP antes de disparar. Sem a barreira, a diferença de tempo de inicialização entre os filhos serializaria as operações e o teste passaria com código errado.
+
+| Cenário | O que prova |
+|---|---|
+| Saldo 100, duas apostas de 80 | uma `PROCESSED`, uma `REJECTED`, saldo 20, **um** débito |
+| Três e quatro processos na mesma carteira | só o saldo disponível sai, e ninguém recebe erro cru de concorrência |
+| 50 submissões da mesma chave (5 processos × 10) | um único débito, 49 replays do mesmo `transactionId` |
+| Quatro carteiras em paralelo | nenhuma recusa: a unidade de concorrência é a carteira |
+| Worker morto com `SIGKILL` depois do commit, antes do ack | a reentrega não duplica o efeito — a inbox commitou junto com o dinheiro |
+| Reinício no meio de quatro mensagens | quatro efeitos, nunca cinco |
+| Dois publishers na mesma outbox | a soma do que os dois publicaram é exatamente o que havia pendente |
+| `REFUND` e `ROLLBACK` da mesma `BET`, juntos | uma credita, a outra recebe `REFERENCE_ALREADY_REVERSED` |
+| `ROLLBACK` e a `BET` ao mesmo tempo | o saldo final não depende de quem chegou primeiro |
+| Duas réplicas do worker de referência no mesmo ciclo | uma única tentativa consumida, o backoff continua valendo |
+
+Todo teste fecha com a mesma invariante: `wallet.balance` igual ao saldo reconstruído somando o ledger.
+
+O próprio harness é testado: um processo filho que morre antes da largada derruba a corrida em segundos, com o `stderr` dele na mensagem, em vez de pendurar o arquivo até o timeout do runner.
+
 ### Isolamento da suíte
 
 Os testes rodam contra um **banco e filas próprios** — `wagering_test` e as filas com sufixo `-test`. O `bun test` define `NODE_ENV=test`, e o Bun carrega o [`.env.test`](./.env.test) por cima do `.env`.
@@ -309,7 +330,7 @@ src/
 test/
   unit/             sem infraestrutura
   integration/      PostgreSQL e LocalStack reais em containers
-  concurrency/      múltiplos processos, paralelismo real
+  concurrency/      múltiplos processos Bun, com barreira de largada
   load/             teste de carga
 ```
 
