@@ -20,8 +20,10 @@ Instalar o Bun: `curl -fsSL https://bun.sh/install | bash`
 ```bash
 cp .env.example .env     # os defaults já apontam para o Compose
 bun install
-bun run compose:up       # build + sobe a stack inteira
+bun run compose:up       # build, aplica as migrations e sobe a stack inteira
 ```
+
+O `compose:up` sobe um serviço `migrate` que aplica as migrations e sai; API, consumer e workers só iniciam depois que ele termina com sucesso. É serviço próprio, e não migration no boot da aplicação, porque três réplicas de API subindo juntas disputariam a mesma migration — e evoluir schema não é trabalho de um worker de fila.
 
 Conferir que está de pé:
 
@@ -176,7 +178,7 @@ Todo endpoint aceita `X-Correlation-Id` e o devolve na resposta. Se o cliente n�
 
 ```http
 GET /health/live     # o processo está vivo — não consulta dependência externa
-GET /health/ready    # PostgreSQL e SQS alcançáveis, com latência de cada probe
+GET /health/ready    # PostgreSQL, schema aplicado e SQS, com latência de cada probe
 ```
 
 Os dois são abertos, sem autenticação: readiness precisa responder mesmo com o Keycloak fora.
@@ -190,10 +192,13 @@ Os workers (`consumer`, `outbox`, `reference`) servem os health checks e `/metri
   "status": "ok",
   "probes": [
     { "name": "postgres", "ok": true, "latencyMs": 2 },
+    { "name": "schema",   "ok": true, "latencyMs": 5 },
     { "name": "sqs",      "ok": true, "latencyMs": 11 }
   ]
 }
 ```
+
+**Banco alcançável não é banco pronto.** A probe `schema` falha enquanto houver migration pendente, nomeando quais: sem ela, uma instância apontada para um banco sem schema respondia `200 ready` e só quebrava na primeira operação de negócio, com `500`.
 
 ## Autenticação
 

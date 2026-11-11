@@ -33,6 +33,7 @@ export class ReadinessService {
   async check(): Promise<ReadinessResult> {
     const probes = await Promise.all([
       this.probe("postgres", () => this.orm.em.getConnection().execute("select 1")),
+      this.probe("schema", () => this.confereSchema()),
       this.probe("sqs", () =>
         this.sqs.send(
           new GetQueueAttributesCommand({
@@ -44,6 +45,23 @@ export class ReadinessService {
     ]);
 
     return { ok: probes.every((probe) => probe.ok), probes };
+  }
+
+  /**
+   * Banco alcancavel nao e banco pronto.
+   *
+   * Com `select 1` sozinho, uma instancia apontada para um banco **sem
+   * migrations** respondia `200 ready` e so falhava na primeira operacao de
+   * negocio, com 500. Readiness existe para responder "me manda trafego?", e
+   * sem schema a resposta e nao: o balanceador precisa saber disso antes de
+   * mandar a primeira aposta, nao depois.
+   */
+  private async confereSchema(): Promise<void> {
+    const pendentes = await this.orm.getMigrator().getPendingMigrations();
+    if (pendentes.length > 0) {
+      const nomes = pendentes.map((m) => m.name).join(", ");
+      throw new Error(`migrations pendentes: ${nomes}`);
+    }
   }
 
   private async probe(name: string, run: () => Promise<unknown>): Promise<ProbeResult> {

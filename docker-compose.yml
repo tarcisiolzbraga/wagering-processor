@@ -39,6 +39,8 @@ x-api: &api
       condition: service_healthy
     localstack:
       condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
   healthcheck:
     # 127.0.0.1, nao localhost: o wget do busybox resolve localhost para ::1
     # e o servidor escuta em IPv4.
@@ -112,6 +114,26 @@ services:
     ports: ["8080:8080"]
     volumes:
       - ./docker/keycloak/realm-jungle.json:/opt/keycloak/data/import/realm-jungle.json:ro
+
+  # Aplica as migrations uma vez e sai; os demais servicos so sobem depois que
+  # ele termina com sucesso.
+  #
+  # Um servico proprio, e nao migration no boot da aplicacao: tres replicas de
+  # API subindo juntas disputariam a mesma migration, e um papel de worker nao
+  # tem nada que ver com evoluir schema. Como `bun run db up` e idempotente,
+  # reiniciar a stack nao refaz nada.
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      <<: *api-env
+      APP_ROLE: api
+    command: ["bun", "run", "src/infrastructure/persistence/migrator-cli.ts", "up"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   # O consumer serve so observabilidade — `/health/live` e `/metrics` —, nao
   # endpoint de negocio: metrica que existe apenas no processo da API deixa
