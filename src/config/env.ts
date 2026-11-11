@@ -40,6 +40,16 @@ const schema = z.object({
     .default("false")
     .transform((value) => value === "true"),
   KEYCLOAK_ISSUER_URL: z.string().url(),
+  /**
+   * Opcional, e separada do issuer de proposito.
+   *
+   * O `iss` do token e o que o Keycloak anuncia para **quem pediu o token** —
+   * `http://localhost:8080/...` para um cliente no host. A API dentro do
+   * Compose alcanca o Keycloak por `http://keycloak:8080/...`. Sem separar os
+   * dois, ou a comparacao de issuer falha, ou a busca das chaves nao resolve o
+   * nome. O issuer e comparado como string; as chaves vem por esta URL.
+   */
+  KEYCLOAK_JWKS_URL: z.string().url().optional(),
   KEYCLOAK_AUDIENCE: z.string().min(1),
 });
 

@@ -195,6 +195,33 @@ Os workers (`consumer`, `outbox`, `reference`) servem os health checks e `/metri
 }
 ```
 
+## Autenticação
+
+Desligada por default (`AUTH_ENABLED=false`) para o avaliador exercitar a API sem obter token. Com `AUTH_ENABLED=true`, os endpoints de negócio (`/wallets`, `/wagering/transactions`, `/providers/...`) exigem `Authorization: Bearer <JWT>` do Keycloak. Health checks e `/metrics` continuam abertos.
+
+```bash
+# Token de provedor, por client credentials
+TOKEN=$(curl -s -X POST http://localhost:8080/realms/jungle/protocol/openid-connect/token \
+  -d grant_type=client_credentials -d client_id=provider-a -d client_secret=provider-a-secret \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+
+curl -H "Authorization: Bearer $TOKEN" http://localhost:3001/wallets/<walletId>
+```
+
+O realm `jungle` já vem com dois clients de serviço — `provider-a` e `provider-b` —, cada um com a claim `providerId` e a audience `wagering-api`. **Os segredos no realm são de desenvolvimento**, versionados para o Compose subir sozinho; em produção não existiriam no repositório.
+
+| Resposta | Quando |
+|---|---|
+| `401 MISSING_TOKEN` | sem header, ou header que não é `Bearer <token>` |
+| `401 INVALID_TOKEN` | assinatura, issuer, audience, expiração ou claim `providerId` |
+| `403 PROVIDER_MISMATCH` | o `providerId` do corpo não é o do token |
+| `403 IDEMPOTENCY_KEY_NOT_OWNED` | a `Idempotency-Key` não é do espaço do provedor do token |
+| `404 TRANSACTION_NOT_FOUND` | transação de outro provedor — 403 confirmaria que ela existe |
+
+O motivo da recusa fica no log do servidor, nunca na resposta: distinguir "assinatura inválida" de "audience errada" daria a quem forja um token o retorno de que ele precisa.
+
+Os endpoints de carteira exigem token mas **não** são escopados por provedor: a carteira é do jogador e compartilhada entre provedores, então o extrato dela contém operações de vários. É limitação consciente, registrada no `ARCHITECTURE.md`.
+
 ## Observabilidade
 
 ### Logs

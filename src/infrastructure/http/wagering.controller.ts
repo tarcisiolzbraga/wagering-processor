@@ -9,6 +9,7 @@ import {
   Post,
   Req,
   Res,
+  UseGuards,
 } from "@nestjs/common";
 import type { Request, Response } from "express";
 
@@ -21,7 +22,13 @@ import {
 import { WagerTransactionQueries } from "../../application/wagering/wager-transaction-queries";
 import { InvalidInputError } from "../../domain/shared/domain-error";
 import { WagerTransactionSource } from "../../domain/wagering/wager-transaction-kind";
+import { AuthGuard, type WithPrincipal } from "./auth.guard";
 import { correlationIdOf, type WithCorrelation } from "./correlation-id.middleware";
+import {
+  confereEspacoDaChave,
+  confereProvedor,
+  pertenceAoChamador,
+} from "./provider-binding";
 import {
   submitWagerTransactionSchema,
   type SubmitWagerTransactionBody,
@@ -62,6 +69,7 @@ function corpoDe(resultado: SubmitWagerTransactionResult): Record<string, unknow
 }
 
 @Controller("wagering/transactions")
+@UseGuards(AuthGuard)
 export class WageringController {
   constructor(
     private readonly submit: SubmitWagerTransaction,
@@ -81,6 +89,14 @@ export class WageringController {
     if (idempotencyKey === undefined || idempotencyKey.trim().length === 0) {
       throw new InvalidInputError("header Idempotency-Key e obrigatorio");
     }
+
+    // O provedor do token manda sobre o do corpo. Sem este confronto, a
+    // autenticacao provaria apenas que quem chama tem *algum* token valido.
+    confereProvedor(req, body.providerId);
+    // E a chave de idempotencia tem que ser do espaco dele: a unicidade e
+    // global, entao ocupar a chave de outro provedor bloquearia a operacao
+    // legitima daquele provedor para sempre.
+    confereEspacoDaChave(req, idempotencyKey.trim());
 
     const resultado = await this.submit.run({
       idempotencyKey,
@@ -102,15 +118,23 @@ export class WageringController {
   }
 
   @Get(":transactionId")
-  async byId(@Param("transactionId") transactionId: string): Promise<Record<string, unknown>> {
+  async byId(
+    @Param("transactionId") transactionId: string,
+    @Req() req: Request & Partial<WithPrincipal>,
+  ): Promise<Record<string, unknown>> {
     assertUuid("transactionId", transactionId);
     const tx = await this.queries.byId(transactionId);
-    if (!tx) throw new NotFoundException({ error: "TRANSACTION_NOT_FOUND" });
+    // Transacao de outro provedor responde igual a inexistente: um 403
+    // confirmaria que ela existe.
+    if (!tx || !pertenceAoChamador(req, tx.providerId)) {
+      throw new NotFoundException({ error: "TRANSACTION_NOT_FOUND" });
+    }
     return { ...tx };
   }
 }
 
 @Controller("providers")
+@UseGuards(AuthGuard)
 export class ProvidersController {
   constructor(private readonly queries: WagerTransactionQueries) {}
 
@@ -118,7 +142,14 @@ export class ProvidersController {
   async byProviderAndExternalId(
     @Param("providerId") providerId: string,
     @Param("externalTransactionId") externalTransactionId: string,
+    @Req() req: Request & Partial<WithPrincipal>,
   ): Promise<Record<string, unknown>> {
+    // O provedor esta no caminho, entao a consulta de um provedor pelos dados
+    // de outro e negada antes de tocar o banco.
+    if (!pertenceAoChamador(req, providerId)) {
+      throw new NotFoundException({ error: "TRANSACTION_NOT_FOUND" });
+    }
+
     const tx = await this.queries.byProviderAndExternalId(providerId, externalTransactionId);
     if (!tx) throw new NotFoundException({ error: "TRANSACTION_NOT_FOUND" });
     return { ...tx };

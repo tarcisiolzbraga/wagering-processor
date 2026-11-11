@@ -18,10 +18,18 @@ export interface TestApp {
  * chamar o use case direto: o que esta sendo testado aqui e justamente a
  * traducao entre dominio e HTTP.
  */
-export async function startTestApp(surface: HttpSurface = "full"): Promise<TestApp> {
+export async function startTestApp(
+  surface: HttpSurface = "full",
+  /** Sobrescreve a env do processo — usado para ligar a autenticacao. */
+  envOverride: Record<string, string> = {},
+): Promise<TestApp> {
+  const env = loadEnv({ ...process.env, ...envOverride });
   const app: INestApplication = await NestFactory.create(
-    AppModule.register(loadEnv(), surface),
-    { logger: false },
+    AppModule.register(env, surface),
+    // `abortOnError: false` e o que faz erro de injecao virar excecao. Com o
+    // default, o Nest chama `process.exit(1)` e, com o logger desligado, o
+    // processo morre **sem imprimir nada** — o boot falha em silencio.
+    { logger: false, abortOnError: false },
   );
   app.useGlobalFilters(new DomainExceptionFilter(app.get<Logger>(LOGGER)));
   await app.listen(0, "127.0.0.1");

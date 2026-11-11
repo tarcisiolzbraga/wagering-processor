@@ -14,5 +14,10 @@ import { loadEnv } from "../../../src/config/env";
  * valer aqui e que **a aplicacao como ela sobe** esta correta com replicas.
  */
 export async function abreContexto(): Promise<INestApplicationContext> {
-  return NestFactory.createApplicationContext(AppModule.register(loadEnv()), { logger: false });
+  // `abortOnError: false`: sem ele, um erro de injecao chama `process.exit(1)`
+  // sem imprimir nada, e o filho morre sem diagnostico nenhum.
+  return NestFactory.createApplicationContext(AppModule.register(loadEnv()), {
+    logger: false,
+    abortOnError: false,
+  });
 }
