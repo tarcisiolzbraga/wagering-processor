@@ -70,6 +70,11 @@ export interface WalletLedgerRepository {
  * infraestrutura, e o consumer a leria como falha transitoria: retry infinito
  * de algo que nunca vai dar certo.
  */
+export interface PendingReferenceRef {
+  readonly transactionId: string;
+  readonly walletId: string;
+}
+
 export enum InsertTransactionOutcome {
   Inserted = "INSERTED",
   IdempotencyKeyExists = "IDEMPOTENCY_KEY_EXISTS",
@@ -104,8 +109,51 @@ export interface WagerTransactionRepository {
    */
   findProcessedReversalOf(referenceTransactionId: string): Promise<WagerTransaction | undefined>;
 
-  /** Fila do worker de referencia ausente, mais antigas primeiro. */
-  findAwaitingReference(limit: number): Promise<readonly WagerTransaction[]>;
+  /**
+   * Fila do worker de referencia ausente: so o que **venceu**, mais antigas
+   * primeiro. Devolve apenas os identificadores de proposito.
+   *
+   * O worker precisa travar a **carteira antes** da transacao, para manter a
+   * mesma ordem de aquisicao de lock que o `SubmitWagerTransaction` usa —
+   * ordens opostas entre dois escritores formam ciclo de deadlock. Entao ele le
+   * sem lock para descobrir qual carteira travar, trava, e so depois reabre a
+   * transacao com `findByIdForUpdate`.
+   */
+  findDueReferenceRetries(limit: number): Promise<readonly PendingReferenceRef[]>;
+
+  /** Releitura simples sob lock, para reconferir o estado. */
+  findByIdForUpdate(id: string): Promise<WagerTransaction | undefined>;
+
+  /**
+   * Releitura sob lock que devolve a transacao **somente se ela ainda estiver
+   * aguardando referencia e vencida**, pelo relogio do banco.
+   *
+   * E este predicado que serializa replicas do worker. A fila e lida **sem**
+   * claim de proposito: reivindicar com `FOR UPDATE SKIP LOCKED` na transacao
+   * exigiria travar a transacao antes da carteira, invertendo a ordem de lock
+   * do `SubmitWagerTransaction` e trazendo de volta o ciclo de deadlock. Em
+   * vez disso, duas replicas podem ler a mesma linha, mas a segunda — que
+   * chega depois do commit da primeira — ve `next_reference_attempt_at` no
+   * futuro e desiste sem queimar tentativa.
+   */
+  lockDueReferenceRetry(id: string): Promise<WagerTransaction | undefined>;
+
+  /**
+   * Agenda a proxima tentativa de resolver a referencia. O instante absoluto e
+   * calculado pelo **banco**: ele e comparado por outro processo, e comparar
+   * relogios de processos diferentes deixa a corretude a merce de clock skew.
+   */
+  scheduleReferenceRetry(id: string, delayMs: number): Promise<void>;
+
+  /**
+   * Conta a tentativa **e** adia, numa transacao propria.
+   *
+   * Usado quando o ciclo da linha estourou: o rollback desfez o incremento de
+   * tentativa junto com todo o resto, e sem adiar a linha continuaria vencida
+   * na mesma posicao da fila — starvando indefinidamente tudo que vem depois
+   * dela na ordenacao.
+   */
+  penalizeReferenceRetry(id: string, delayMs: number): Promise<void>;
 }
 
 export interface InboxRepository {

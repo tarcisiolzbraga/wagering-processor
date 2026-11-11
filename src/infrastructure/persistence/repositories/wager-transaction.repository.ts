@@ -1,7 +1,8 @@
-import type { EntityManager } from "@mikro-orm/postgresql";
+import { LockMode, type EntityManager } from "@mikro-orm/postgresql";
 
 import {
   InsertTransactionOutcome,
+  type PendingReferenceRef,
   type WagerTransactionRepository,
 } from "../../../application/ports/repositories";
 import { WagerTransactionKind } from "../../../domain/wagering/wager-transaction-kind";
@@ -91,6 +92,12 @@ export class MikroWagerTransactionRepository implements WagerTransactionReposito
       // vez de gravar NULL, deixando valor antigo para tras.
       .update({
         status: transaction.status,
+        // Zerado fora de PENDING_REFERENCE: o CHECK do schema exige, e deixar
+        // valor para tras faria o indice parcial apontar para lixo.
+        nextReferenceAttemptAt:
+          transaction.status === WagerTransactionStatus.PendingReference
+            ? undefined
+            : null,
         failureCode: toNull(transaction.failureCode),
         observedBalanceAmount: toNull(transaction.observedBalance?.toJSON().amount),
         referenceTransactionId: toNull(transaction.referenceTransactionId),
@@ -113,12 +120,81 @@ export class MikroWagerTransactionRepository implements WagerTransactionReposito
     return entity ? WagerTransactionMapper.toDomain(entity) : undefined;
   }
 
-  async findAwaitingReference(limit: number): Promise<readonly WagerTransaction[]> {
-    const entities = await this.em.find(
-      wagerTransactionSchema,
-      { status: WagerTransactionStatus.PendingReference },
-      { orderBy: { pendingReferenceSince: "asc" }, limit },
+  async findDueReferenceRetries(limit: number): Promise<readonly PendingReferenceRef[]> {
+    // `now()` do banco, nao o relogio do processo: a coluna foi escrita por
+    // outro processo e comparar relogios diferentes convida clock skew.
+    const linhas = await this.em.getConnection().execute<
+      Array<{ id: string; wallet_id: string }>
+    >(
+      `select id, wallet_id
+         from wager_transactions
+        where status = 'PENDING_REFERENCE'
+          and (next_reference_attempt_at is null or next_reference_attempt_at <= now())
+        order by next_reference_attempt_at nulls first, pending_reference_since
+        limit ?::int`,
+      [limit],
+      "all",
+      this.em.getTransactionContext(),
     );
-    return entities.map((entity) => WagerTransactionMapper.toDomain(entity));
+
+    return linhas.map((linha) => ({
+      transactionId: linha.id,
+      walletId: linha.wallet_id,
+    }));
+  }
+
+  async findByIdForUpdate(id: string): Promise<WagerTransaction | undefined> {
+    const entity = await this.em.findOne(
+      wagerTransactionSchema,
+      { id },
+      { lockMode: LockMode.PESSIMISTIC_WRITE },
+    );
+    return entity ? WagerTransactionMapper.toDomain(entity) : undefined;
+  }
+
+  async lockDueReferenceRetry(id: string): Promise<WagerTransaction | undefined> {
+    // O vencimento entra no proprio predicado do lock, avaliado com `now()` do
+    // banco: e isso que impede duas replicas de queimarem tentativa da mesma
+    // linha no mesmo ciclo.
+    const travadas = await this.em.getConnection().execute<Array<{ id: string }>>(
+      `select id
+         from wager_transactions
+        where id = ?::uuid
+          and status = 'PENDING_REFERENCE'
+          and (next_reference_attempt_at is null or next_reference_attempt_at <= now())
+          for update`,
+      [id],
+      "all",
+      this.em.getTransactionContext(),
+    );
+    if (travadas.length === 0) return undefined;
+
+    // A linha ja esta travada pelo statement acima; carregar pela entidade
+    // mantem o mapeamento e os custom types valendo.
+    const entity = await this.em.findOne(wagerTransactionSchema, { id });
+    return entity ? WagerTransactionMapper.toDomain(entity) : undefined;
+  }
+
+  async penalizeReferenceRetry(id: string, delayMs: number): Promise<void> {
+    await this.em.getConnection().execute(
+      `update wager_transactions
+          set reference_attempts        = reference_attempts + 1,
+              next_reference_attempt_at = now() + make_interval(secs => ?::numeric)
+        where id = ?::uuid and status = 'PENDING_REFERENCE'`,
+      [delayMs / 1000, id],
+      "run",
+      this.em.getTransactionContext(),
+    );
+  }
+
+  async scheduleReferenceRetry(id: string, delayMs: number): Promise<void> {
+    await this.em.getConnection().execute(
+      `update wager_transactions
+          set next_reference_attempt_at = now() + make_interval(secs => ?::numeric)
+        where id = ?::uuid and status = 'PENDING_REFERENCE'`,
+      [delayMs / 1000, id],
+      "run",
+      this.em.getTransactionContext(),
+    );
   }
 }

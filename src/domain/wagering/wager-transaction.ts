@@ -40,15 +40,39 @@ export interface CreateWagerTransactionProps {
 }
 
 /**
- * Limite e TTL do reprocessamento de referencia ausente.
+ * Politica de reprocessamento de referencia ausente.
  *
- * 24h cobre o incidente realista — fila do provedor atrasada, reprocessamento
- * em lote, janela de manutencao — sem deixar registro pendente indefinidamente
- * poluindo metrica e ocupando o worker. 15 tentativas com backoff exponencial
- * saturado em 5 min cobrem essa janela com folga.
+ * **O TTL e o limite que vale**; o numero de tentativas e rede de seguranca
+ * contra laco patologico. Os dois precisam ser coerentes, e na primeira versao
+ * nao eram: 15 tentativas com backoff saturado em 5 min esgotam em cerca de 38
+ * minutos, o que tornava o TTL de 24h decorativo — a transacao seria rejeitada
+ * muito antes de a janela que o TTL promete ter passado.
+ *
+ * 24h cobre o incidente realista: fila do provedor atrasada, reprocessamento
+ * em lote, janela de manutencao. Para o TTL de fato decidir, a soma dos
+ * atrasos precisa passar de 24h: com o backoff saturado em 15 min, a rampa
+ * inicial soma ~17 min e cada tentativa seguinte adiciona 15, entao 120
+ * tentativas cobrem cerca de 28h. Ha teste fixando essa relacao.
  */
-export const REFERENCE_MAX_ATTEMPTS = 15;
+export const REFERENCE_MAX_ATTEMPTS = 120;
 export const REFERENCE_TTL_MS = 24 * 60 * 60 * 1000;
+
+const REFERENCE_BACKOFF_BASE_MS = 1_000;
+const REFERENCE_BACKOFF_MAX_MS = 15 * 60 * 1000;
+
+/**
+ * Espera antes da proxima tentativa: 1s, 2s, 4s… saturando em 15 min.
+ *
+ * Deterministico, sem jitter: o agendamento e por linha e a releitura sob o
+ * lock da carteira confere o vencimento com o relogio do banco, entao duas
+ * replicas nunca consomem a mesma tentativa — nao ha efeito de manada a
+ * dispersar. Em troca, o agendamento fica exatamente testavel.
+ */
+export function referenceBackoffDelayMs(attempts: number): number {
+  if (attempts < 1) return REFERENCE_BACKOFF_BASE_MS;
+  const exponencial = REFERENCE_BACKOFF_BASE_MS * 2 ** (attempts - 1);
+  return Math.min(exponencial, REFERENCE_BACKOFF_MAX_MS);
+}
 
 export interface WagerTransactionState extends CreateWagerTransactionProps {
   readonly status: WagerTransactionStatus;
