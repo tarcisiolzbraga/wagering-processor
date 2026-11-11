@@ -4,6 +4,7 @@ import { defineConfig } from "@mikro-orm/postgresql";
 
 import { entitySchemas } from "./entities";
 
+import type { Logger } from "../../application/ports/logger";
 import { loadEnv, type Env } from "../../config/env";
 
 /**
@@ -12,7 +13,7 @@ import { loadEnv, type Env } from "../../config/env";
  * deterministico e evita o acesso dinamico a arquivos, que e o ponto de
  * atrito conhecido entre MikroORM e Bun.
  */
-export function buildOrmConfig(env: Env = loadEnv()) {
+export function buildOrmConfig(env: Env = loadEnv(), logger?: Logger) {
   return defineConfig({
     host: env.POSTGRES_HOST,
     port: env.POSTGRES_PORT,
@@ -39,5 +40,9 @@ export function buildOrmConfig(env: Env = loadEnv()) {
     },
 
     debug: env.LOG_LEVEL === "debug",
+    // O logger default do MikroORM escreve prosa com ANSI direto no console.
+    // Uma linha fora do formato quebra a afirmacao de log estruturado: o
+    // agregador perde justamente a linha de SQL que explicaria a lentidao.
+    ...(logger ? { logger: (mensagem: string) => logger.debug(mensagem, { nest: "mikro-orm" }) } : {}),
   });
 }

@@ -3,6 +3,7 @@ import { MikroORM } from "@mikro-orm/postgresql";
 import { Module, type DynamicModule, type MiddlewareConsumer, type NestModule } from "@nestjs/common";
 
 import { CLOCK, type Clock } from "./application/ports/clock";
+import { METRICS, type Metrics } from "./application/ports/metrics";
 import { EVENT_PUBLISHER, type EventPublisher } from "./application/ports/event-publisher";
 import { LOGGER, type Logger } from "./application/ports/logger";
 import { MESSAGE_QUEUE, type MessageQueue } from "./application/ports/message-queue";
@@ -25,32 +26,51 @@ import { ENV, type Env } from "./config/env";
 import { correlationIdMiddleware } from "./infrastructure/http/correlation-id.middleware";
 import { HealthController } from "./infrastructure/http/health/health.controller";
 import { ReadinessService } from "./infrastructure/http/health/readiness.service";
+import { MetricsController } from "./infrastructure/http/metrics.controller";
 import { ProvidersController, WageringController } from "./infrastructure/http/wagering.controller";
 import { WalletsController } from "./infrastructure/http/wallets.controller";
 import { SqsEventPublisher } from "./infrastructure/messaging/sqs-event-publisher";
 import { SqsMessageQueue } from "./infrastructure/messaging/sqs-message-queue";
-import { ConsoleLogger } from "./infrastructure/observability/console-logger";
+import { createLogger } from "./infrastructure/observability/create-logger";
+import { PrometheusMetrics } from "./infrastructure/observability/prometheus-metrics";
 import { LoggingReconciliationAlarm } from "./infrastructure/observability/logging-reconciliation-alarm";
 import { buildOrmConfig } from "./infrastructure/persistence/mikro-orm.config";
 import { MikroUnitOfWork } from "./infrastructure/persistence/unit-of-work";
 import { SystemClock, UuidV7Generator } from "./infrastructure/system-clock";
 
+/**
+ * Quanto de HTTP o processo expoe.
+ *
+ * Os workers nao servem endpoint de negocio, mas **precisam** servir
+ * `/metrics` e `/health/live`: metrica que so existe no processo da API deixa
+ * cego justamente o lado onde a falha e silenciosa — publisher parado, consumer
+ * em loop de retry.
+ */
+export type HttpSurface = "full" | "observability-only";
+
 @Module({})
 export class AppModule implements NestModule {
-  static register(env: Env): DynamicModule {
+  static register(env: Env, surface: HttpSurface = "full"): DynamicModule {
+    const controllers =
+      surface === "full"
+        ? [
+            HealthController,
+            MetricsController,
+            WalletsController,
+            WageringController,
+            ProvidersController,
+          ]
+        : [HealthController, MetricsController];
+
     return {
       module: AppModule,
-      controllers: [
-        HealthController,
-        WalletsController,
-        WageringController,
-        ProvidersController,
-      ],
+      controllers,
       providers: [
         { provide: ENV, useValue: env },
         {
           provide: MikroORM,
-          useFactory: () => MikroORM.init(buildOrmConfig(env)),
+          useFactory: (logger: Logger) => MikroORM.init(buildOrmConfig(env, logger)),
+          inject: [LOGGER],
         },
         {
           provide: SQSClient,
@@ -66,12 +86,12 @@ export class AppModule implements NestModule {
         },
         ReadinessService,
 
+        { provide: LOGGER, useValue: createLogger(env) },
         {
-          provide: LOGGER,
-          useFactory: () => new ConsoleLogger(env.LOG_LEVEL === "trace" ? "debug" : env.LOG_LEVEL, {
-            role: env.APP_ROLE,
-            pid: process.pid,
-          }),
+          provide: METRICS,
+          // Uma instancia por processo, com `role` como label default: a mesma
+          // serie de tres instancias de API agrega sem ambiguidade.
+          useFactory: () => new PrometheusMetrics(env.APP_ROLE),
         },
         {
           provide: MESSAGE_QUEUE,
@@ -87,7 +107,12 @@ export class AppModule implements NestModule {
         },
         { provide: CLOCK, useClass: SystemClock },
         { provide: ID_GENERATOR, useClass: UuidV7Generator },
-        { provide: RECONCILIATION_ALARM, useClass: LoggingReconciliationAlarm },
+        {
+          provide: RECONCILIATION_ALARM,
+          useFactory: (logger: Logger, metrics: Metrics) =>
+            new LoggingReconciliationAlarm(logger, metrics),
+          inject: [LOGGER, METRICS],
+        },
         {
           provide: UNIT_OF_WORK,
           useFactory: (orm: MikroORM) => new MikroUnitOfWork(orm),
@@ -96,8 +121,9 @@ export class AppModule implements NestModule {
 
         {
           provide: WagerTransactionApplier,
-          useFactory: (ids: IdGenerator) => new WagerTransactionApplier(ids),
-          inject: [ID_GENERATOR],
+          useFactory: (ids: IdGenerator, metrics: Metrics) =>
+            new WagerTransactionApplier(ids, metrics),
+          inject: [ID_GENERATOR, METRICS],
         },
         {
           provide: SubmitWagerTransaction,
@@ -106,8 +132,17 @@ export class AppModule implements NestModule {
             clock: Clock,
             ids: IdGenerator,
             applier: WagerTransactionApplier,
-          ) => new SubmitWagerTransaction(uow, clock, ids, applier),
-          inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR, WagerTransactionApplier],
+            logger: Logger,
+            metrics: Metrics,
+          ) => new SubmitWagerTransaction(uow, clock, ids, applier, logger, metrics),
+          inject: [
+            UNIT_OF_WORK,
+            CLOCK,
+            ID_GENERATOR,
+            WagerTransactionApplier,
+            LOGGER,
+            METRICS,
+          ],
         },
         {
           provide: PendingReferenceWorker,
@@ -117,13 +152,15 @@ export class AppModule implements NestModule {
             clock: Clock,
             ids: IdGenerator,
             logger: Logger,
-          ) => new PendingReferenceWorker(uow, applier, clock, ids, logger),
-          inject: [UNIT_OF_WORK, WagerTransactionApplier, CLOCK, ID_GENERATOR, LOGGER],
+            metrics: Metrics,
+          ) => new PendingReferenceWorker(uow, applier, clock, ids, logger, metrics),
+          inject: [UNIT_OF_WORK, WagerTransactionApplier, CLOCK, ID_GENERATOR, LOGGER, METRICS],
         },
         {
           provide: OpenWallet,
-          useFactory: (uow: UnitOfWork, clock, ids) => new OpenWallet(uow, clock, ids),
-          inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR],
+          useFactory: (uow: UnitOfWork, clock: Clock, ids: IdGenerator, metrics: Metrics) =>
+            new OpenWallet(uow, clock, ids, metrics),
+          inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR, METRICS],
         },
         {
           provide: WalletQueries,
@@ -137,9 +174,13 @@ export class AppModule implements NestModule {
         },
         {
           provide: WagerTransactionConsumer,
-          useFactory: (queue: MessageQueue, submit: SubmitWagerTransaction, logger: Logger) =>
-            new WagerTransactionConsumer(queue, submit, logger),
-          inject: [MESSAGE_QUEUE, SubmitWagerTransaction, LOGGER],
+          useFactory: (
+            queue: MessageQueue,
+            submit: SubmitWagerTransaction,
+            logger: Logger,
+            metrics: Metrics,
+          ) => new WagerTransactionConsumer(queue, submit, logger, metrics),
+          inject: [MESSAGE_QUEUE, SubmitWagerTransaction, LOGGER, METRICS],
         },
         {
           provide: OutboxPublisherWorker,
@@ -148,17 +189,19 @@ export class AppModule implements NestModule {
             publisher: EventPublisher,
             clock: Clock,
             logger: Logger,
+            metrics: Metrics,
           ) =>
             new OutboxPublisherWorker(
               uow,
               publisher,
               clock,
               logger,
+              metrics,
               // O id identifica quem reivindicou, para diagnostico. Com
               // replicas no Compose, o hostname distingue os processos.
               defaultOutboxOptions(`${process.env["HOSTNAME"] ?? "local"}:${process.pid}`),
             ),
-          inject: [UNIT_OF_WORK, EVENT_PUBLISHER, CLOCK, LOGGER],
+          inject: [UNIT_OF_WORK, EVENT_PUBLISHER, CLOCK, LOGGER, METRICS],
         },
         {
           provide: ReconcileWallet,

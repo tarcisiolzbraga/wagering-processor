@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { HttpStatus, ServiceUnavailableException, NotFoundException } from "@nestjs/common";
 import type { ArgumentsHost } from "@nestjs/common";
 
@@ -9,6 +9,7 @@ import {
 } from "../../../src/domain/shared/domain-error";
 import { FailureCode } from "../../../src/domain/shared/failure-code";
 import { DomainExceptionFilter } from "../../../src/infrastructure/http/domain-exception.filter";
+import { loggerQueGrava, type LinhaDeLog } from "../../support/logger";
 
 interface RespostaFake {
   statusCode?: number;
@@ -41,20 +42,14 @@ function hostFake(): { host: ArgumentsHost; res: RespostaFake } {
   };
 }
 
-const original = console.error;
-afterEach(() => {
-  console.error = original;
-});
+const registrado: LinhaDeLog[] = [];
+const filtro = new DomainExceptionFilter(loggerQueGrava(registrado));
 
-function capturaLogs(): string[] {
-  const linhas: string[] = [];
-  console.error = (...args: unknown[]) => {
-    linhas.push(args.map(String).join(" "));
-  };
-  return linhas;
+/** Zera o que foi registrado e devolve a lista que o filtro vai preencher. */
+function capturaLogs(): LinhaDeLog[] {
+  registrado.length = 0;
+  return registrado;
 }
-
-const filtro = new DomainExceptionFilter();
 
 describe("traducao de erro para status", () => {
   it("InvalidInputError vira 400 nao-retentavel", () => {
@@ -132,11 +127,13 @@ describe("diagnostico", () => {
     filtro.catch(new InvariantViolationError("bug interno"), host);
 
     expect(linhas).toHaveLength(1);
-    const registro = JSON.parse(linhas[0]!) as Record<string, unknown>;
-    expect(registro["status"]).toBe(500);
-    expect(registro["correlationId"]).toBe("corr-1");
-    expect(registro["path"]).toBe("/wagering/transactions");
-    expect(registro["stack"]).toBeTypeOf("string");
+    expect(linhas[0]!.nivel).toBe("error");
+    expect(linhas[0]!.campos).toMatchObject({
+      status: 500,
+      correlationId: "corr-1",
+      path: "/wagering/transactions",
+    });
+    expect(linhas[0]!.campos["stack"]).toBeTypeOf("string");
   });
 
   it("loga 503 tambem", () => {
@@ -144,6 +141,17 @@ describe("diagnostico", () => {
     const linhas = capturaLogs();
     filtro.catch(Object.assign(new Error("conexao caiu"), { code: "EPIPE" }), host);
     expect(linhas).toHaveLength(1);
+  });
+
+  it("nao registra a mensagem do erro de dominio, que cita o valor submetido", () => {
+    const { host } = hostFake();
+    const linhas = capturaLogs();
+    filtro.catch(new InvariantViolationError("saldo 25.123 mudou sob o lock"), host);
+
+    // Redacao age sobre campo, nao sobre texto dentro de string: a mensagem
+    // inteira fica fora, e o nome do erro diz o que aconteceu.
+    expect(JSON.stringify(linhas)).not.toContain("25.123");
+    expect(linhas[0]!.campos["erro"]).toBe("InvariantViolationError");
   });
 
   it("nao loga erro de cliente: seria ruido", () => {

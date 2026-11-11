@@ -1,6 +1,9 @@
 import { WagerTransactionSource } from "../../domain/wagering/wager-transaction-kind";
 import type { Logger } from "../ports/logger";
 import type { MessageQueue, QueueMessage } from "../ports/message-queue";
+import { errorMessageForLog, errorNameOf } from "../shared/error-fields";
+import type { Metrics } from "../ports/metrics";
+import { InvalidInputError } from "../../domain/shared/domain-error";
 import { FailureKind, classifyFailure } from "../shared/failure-classification";
 import {
   SubmitOutcome,
@@ -65,6 +68,7 @@ export class WagerTransactionConsumer {
     private readonly queue: MessageQueue,
     private readonly submit: SubmitWagerTransaction,
     private readonly logger: Logger,
+    private readonly metrics: Metrics,
     private readonly options: ConsumerOptions = DEFAULT_CONSUMER_OPTIONS,
   ) {}
 
@@ -230,7 +234,11 @@ export class WagerTransactionConsumer {
     log: Logger,
   ): Promise<void> {
     const classe = classifyFailure(erro);
+    // `reason` acompanha a mensagem para a DLQ, onde o payload inteiro ja
+    // esta: ali ela e diagnostico, nao exposicao. No log entra a versao sem
+    // mensagem de dominio, que citaria o valor submetido.
     const reason = erro instanceof Error ? erro.message : String(erro);
+    const paraLog = { erro: errorNameOf(erro), mensagem: errorMessageForLog(erro) };
 
     if (classe === FailureKind.Business) {
       // Regra de negocio recusou algo que nem virou linha. Terminal.
@@ -239,38 +247,53 @@ export class WagerTransactionConsumer {
         "nao foi possivel dar ack na recusa de negocio",
         mensagem,
       );
-      log.warn("mensagem recusada por regra de negocio", { reason });
+      log.warn("mensagem recusada por regra de negocio", paraLog);
       return;
     }
 
     if (classe === FailureKind.Permanent) {
       // Se o envio para a DLQ falhar, a mensagem fica na fila e o redrive do
       // broker a levara depois do limite de entregas. Nao se perde.
-      await this.tentaFila(
+      const enviada = await this.tentaFila(
         () => this.queue.sendToDeadLetter(mensagem, reason),
         "nao foi possivel enviar para a DLQ; o redrive do broker assumira",
         mensagem,
       );
-      log.error("mensagem enviada para a DLQ", { reason, failureKind: classe });
+      if (!enviada) return;
+
+      // Contado **depois** do envio. Antes, uma DLQ indisponivel contava a
+      // mensagem agora e outra vez em cada reentrega, inflando a serie
+      // exatamente quando ela precisa ser confiavel.
+      //
+      // Categoria, nao a mensagem: label de cardinalidade ilimitada explode a
+      // serie temporal. A mensagem vai no log.
+      this.metrics.deadLetterSent(
+        erro instanceof InvalidInputError ? "invalid_envelope" : "permanent_failure",
+      );
+      log.error("mensagem enviada para a DLQ", { ...paraLog, failureKind: classe });
       return;
     }
 
     // Transitoria: nao da ack. Devolve para a fila com espera curta.
     if (mensagem.receiveCount >= this.options.maxReceiveCount) {
       // O redrive do broker faria isso de qualquer forma; registrar aqui deixa
-      // explicito que o limite foi atingido, e nao que a mensagem sumiu.
+      // explicito que o limite foi atingido, e nao que a mensagem sumiu. Conta
+      // na mesma serie com motivo proprio: sem isso, a unica mensagem que o
+      // sistema **sabe** que vai para a DLQ seria a unica fora da metrica.
+      this.metrics.deadLetterSent("delivery_limit");
       log.error("limite de entregas atingido; o redrive levara para a DLQ", {
-        reason,
+        ...paraLog,
         receiveCount: mensagem.receiveCount,
       });
       return;
     }
 
+    this.metrics.retryScheduled("queue_message");
     await this.devolve(mensagem, this.options.retryVisibilitySeconds);
-    log.warn("falha transitoria; mensagem devolvida para a fila", { reason });
+    log.warn("falha transitoria; mensagem devolvida para a fila", paraLog);
   }
 
-  private devolve(mensagem: QueueMessage, segundos: number): Promise<void> {
+  private devolve(mensagem: QueueMessage, segundos: number): Promise<boolean> {
     // Se nao der para devolver, o visibility timeout resolve sozinho.
     return this.tentaFila(
       () => this.queue.releaseVisibility(mensagem, segundos),
@@ -286,18 +309,21 @@ export class WagerTransactionConsumer {
    * `handle`, engolia o log daquela mensagem e reaparecia la em cima como
    * "falha ao consultar a fila" — diagnostico enganoso.
    */
+  /** Devolve se a operacao de fila concluiu, para quem precisa saber. */
   private async tentaFila(
     operacao: () => Promise<void>,
     aviso: string,
     mensagem: QueueMessage,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       await operacao();
+      return true;
     } catch (erro: unknown) {
       this.logger.warn(aviso, {
         brokerMessageId: mensagem.brokerMessageId,
         reason: erro instanceof Error ? erro.message : String(erro),
       });
+      return false;
     }
   }
 

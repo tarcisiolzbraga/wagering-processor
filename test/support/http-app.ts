@@ -2,7 +2,8 @@ import { NestFactory } from "@nestjs/core";
 import type { INestApplication } from "@nestjs/common";
 import type { AddressInfo } from "node:net";
 
-import { AppModule } from "../../src/app.module";
+import { LOGGER, type Logger } from "../../src/application/ports/logger";
+import { AppModule, type HttpSurface } from "../../src/app.module";
 import { loadEnv } from "../../src/config/env";
 import { DomainExceptionFilter } from "../../src/infrastructure/http/domain-exception.filter";
 
@@ -17,11 +18,12 @@ export interface TestApp {
  * chamar o use case direto: o que esta sendo testado aqui e justamente a
  * traducao entre dominio e HTTP.
  */
-export async function startTestApp(): Promise<TestApp> {
-  const app: INestApplication = await NestFactory.create(AppModule.register(loadEnv()), {
-    logger: false,
-  });
-  app.useGlobalFilters(new DomainExceptionFilter());
+export async function startTestApp(surface: HttpSurface = "full"): Promise<TestApp> {
+  const app: INestApplication = await NestFactory.create(
+    AppModule.register(loadEnv(), surface),
+    { logger: false },
+  );
+  app.useGlobalFilters(new DomainExceptionFilter(app.get<Logger>(LOGGER)));
   await app.listen(0, "127.0.0.1");
 
   const endereco = app.getHttpServer().address() as AddressInfo;

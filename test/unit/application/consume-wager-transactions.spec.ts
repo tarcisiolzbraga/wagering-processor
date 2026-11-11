@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import type { Logger } from "../../../src/application/ports/logger";
 import type { MessageQueue, QueueMessage } from "../../../src/application/ports/message-queue";
+import { NoopMetrics } from "../../../src/infrastructure/observability/prometheus-metrics";
 import {
   DEFAULT_CONSUMER_OPTIONS,
   WagerTransactionConsumer,
@@ -17,14 +18,8 @@ import {
   InvalidInputError,
 } from "../../../src/domain/shared/domain-error";
 import { FailureCode } from "../../../src/domain/shared/failure-code";
+import { loggerMudo } from "../../support/logger";
 
-const loggerMudo: Logger = {
-  debug: () => {},
-  info: () => {},
-  warn: () => {},
-  error: () => {},
-  child: () => loggerMudo,
-};
 
 interface Registro {
   readonly acks: string[];
@@ -105,7 +100,7 @@ async function rodaUmLote(
   submit: SubmitWagerTransaction,
   esperaMs = 20,
 ): Promise<void> {
-  const consumer = new WagerTransactionConsumer(fila, submit, loggerMudo, {
+  const consumer = new WagerTransactionConsumer(fila, submit, loggerMudo, new NoopMetrics(), {
     ...DEFAULT_CONSUMER_OPTIONS,
     waitSeconds: 0,
     idleDelayMs: 1,
@@ -304,7 +299,7 @@ describe("consumer — religar depois de parar", () => {
     // `drenando` nao era resetado no start, entao o consumer religado
     // devolvia toda mensagem sem processar nenhuma.
     const fila = new FilaFake([[mensagem({ brokerMessageId: "antes" })]]);
-    const consumer = new WagerTransactionConsumer(fila, submitQue(async () => processado), loggerMudo, {
+    const consumer = new WagerTransactionConsumer(fila, submitQue(async () => processado), loggerMudo, new NoopMetrics(), {
       ...DEFAULT_CONSUMER_OPTIONS,
       waitSeconds: 0,
       idleDelayMs: 1,
@@ -344,7 +339,7 @@ describe("consumer — falha na propria fila nao escapa", () => {
     }
 
     const fila = new FilaComAckRuim([[mensagem()]]);
-    const consumer = new WagerTransactionConsumer(fila, submitQue(async () => processado), logger, {
+    const consumer = new WagerTransactionConsumer(fila, submitQue(async () => processado), logger, new NoopMetrics(), {
       ...DEFAULT_CONSUMER_OPTIONS,
       waitSeconds: 0,
       idleDelayMs: 1,
@@ -381,6 +376,7 @@ describe("consumer — nivel de log por resultado", () => {
         idempotentReplay: false,
       })),
       logger,
+      new NoopMetrics(),
       { ...DEFAULT_CONSUMER_OPTIONS, waitSeconds: 0, idleDelayMs: 1 },
     );
     const execucao = consumer.start();
@@ -401,6 +397,7 @@ describe("consumer — nivel de log por resultado", () => {
       fila,
       submitQue(async () => ({ outcome: SubmitOutcome.Rejected, idempotentReplay: false })),
       logger,
+      new NoopMetrics(),
       { ...DEFAULT_CONSUMER_OPTIONS, waitSeconds: 0, idleDelayMs: 1 },
     );
     const execucao = consumer.start();
@@ -418,7 +415,7 @@ describe("consumer — fila vazia nao starva o event loop", () => {
     // processo fica surdo: nem setTimeout nem SIGTERM chegam a rodar. Este
     // teste travava indefinidamente antes da correcao.
     const fila = new FilaFake([]);
-    const consumer = new WagerTransactionConsumer(fila, submitQue(async () => processado), loggerMudo, {
+    const consumer = new WagerTransactionConsumer(fila, submitQue(async () => processado), loggerMudo, new NoopMetrics(), {
       ...DEFAULT_CONSUMER_OPTIONS,
       waitSeconds: 0,
       idleDelayMs: 1,
@@ -445,6 +442,7 @@ describe("consumer — shutdown", () => {
         return processado;
       }),
       loggerMudo,
+      new NoopMetrics(),
       { ...DEFAULT_CONSUMER_OPTIONS, waitSeconds: 0, idleDelayMs: 1 },
     );
 
@@ -472,6 +470,7 @@ describe("consumer — shutdown", () => {
         return processado;
       }),
       loggerMudo,
+      new NoopMetrics(),
       { ...DEFAULT_CONSUMER_OPTIONS, waitSeconds: 0, idleDelayMs: 1 },
     );
 

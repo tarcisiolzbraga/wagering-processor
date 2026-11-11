@@ -12,12 +12,13 @@ import { SubmitWagerTransaction } from "../../src/application/wagering/submit-wa
 import { OpenWallet } from "../../src/application/wallets/open-wallet";
 import { OutboxMessage } from "../../src/domain/messaging/outbox-message";
 import { SqsEventPublisher } from "../../src/infrastructure/messaging/sqs-event-publisher";
-import { ConsoleLogger } from "../../src/infrastructure/observability/console-logger";
 import { MikroUnitOfWork } from "../../src/infrastructure/persistence/unit-of-work";
 import { SystemClock, UuidV7Generator } from "../../src/infrastructure/system-clock";
 import { loadEnv } from "../../src/config/env";
+import { NoopMetrics } from "../../src/infrastructure/observability/prometheus-metrics";
 import { openOrmWithFreshSchema } from "../support/database";
 import { sqs } from "../support/sqs";
+import { loggerMudo } from "../support/logger";
 
 const env = loadEnv();
 const EVENTS_URL = env.SQS_EVENTS_QUEUE_URL;
@@ -29,8 +30,8 @@ let open: OpenWallet;
 
 const clock = new SystemClock();
 const ids = new UuidV7Generator();
-const logger = new ConsoleLogger("error");
 const uuid = (): string => crypto.randomUUID();
+const metrics = new NoopMetrics();
 
 /** Publisher que sempre falha, para exercitar o caminho de retry. */
 class PublisherQueFalha implements EventPublisher {
@@ -64,7 +65,7 @@ function worker(
   publisher: EventPublisher,
   over: Partial<ReturnType<typeof defaultOutboxOptions>> = {},
 ): OutboxPublisherWorker {
-  return new OutboxPublisherWorker(uow, publisher, clock, logger, {
+  return new OutboxPublisherWorker(uow, publisher, clock, loggerMudo, metrics, {
     ...defaultOutboxOptions(`worker-${uuid()}`),
     ...over,
   });
@@ -164,8 +165,15 @@ async function leEventos(): Promise<
 beforeAll(async () => {
   orm = await openOrmWithFreshSchema();
   uow = new MikroUnitOfWork(orm);
-  submit = new SubmitWagerTransaction(uow, clock, ids, new WagerTransactionApplier(ids));
-  open = new OpenWallet(uow, clock, ids);
+  submit = new SubmitWagerTransaction(
+    uow,
+    clock,
+    ids,
+    new WagerTransactionApplier(ids, metrics),
+    loggerMudo,
+    metrics,
+  );
+  open = new OpenWallet(uow, clock, ids, metrics);
 });
 
 beforeEach(async () => {

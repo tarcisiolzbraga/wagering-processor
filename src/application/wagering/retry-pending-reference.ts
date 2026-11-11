@@ -1,4 +1,5 @@
 import { FailureCode } from "../../domain/shared/failure-code";
+import type { WagerTransaction } from "../../domain/wagering/wager-transaction";
 import {
   REFERENCE_MAX_ATTEMPTS,
   REFERENCE_TTL_MS,
@@ -7,6 +8,7 @@ import {
 import type { Clock } from "../ports/clock";
 import type { IdGenerator } from "../ports/id-generator";
 import type { Logger } from "../ports/logger";
+import type { Metrics } from "../ports/metrics";
 import type { UnitOfWork } from "../ports/unit-of-work";
 import { ApplyOutcomeKind, type WagerTransactionApplier } from "./apply-wager-transaction";
 
@@ -58,6 +60,7 @@ export class PendingReferenceWorker {
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
     private readonly logger: Logger,
+    private readonly metrics: Metrics,
     private readonly options: PendingReferenceOptions = DEFAULT_PENDING_REFERENCE_OPTIONS,
   ) {}
 
@@ -161,6 +164,7 @@ export class PendingReferenceWorker {
   ): Promise<Resultado> {
     const correlationId = this.ids.next();
     const now = this.clock.now();
+    const iniciado = performance.now();
 
     return this.uow.run(async (ctx) => {
       // ---- Ordem de lock: carteira **antes** da transacao.
@@ -199,6 +203,11 @@ export class PendingReferenceWorker {
 
       if (resultado.kind !== ApplyOutcomeKind.ReferenceMissing) {
         const desfecho = resultado.kind === ApplyOutcomeKind.Processed ? "resolved" : "rejected";
+        // A transacao foi aplicada **aqui**, nao na submissao: ela saiu de lá
+        // como PENDING_REFERENCE. Sem esta chamada, toda reversao que chegou
+        // antes da referencia ficaria fora de `wager_transactions_total`, e a
+        // serie nao fecharia com o ledger.
+        this.observa(transaction, resultado.kind, resultado.failureCode, iniciado);
         this.logger.info(`referencia ${desfecho === "resolved" ? "resolvida" : "recusada"}`, {
           transactionId,
           walletId,
@@ -224,6 +233,7 @@ export class PendingReferenceWorker {
           { ctx, transaction, wallet, now, correlationId },
           FailureCode.ReferenceNotFound,
         );
+        this.observa(transaction, ApplyOutcomeKind.Rejected, FailureCode.ReferenceNotFound, iniciado);
         this.logger.warn("referencia nunca chegou; transacao rejeitada", {
           transactionId,
           walletId,
@@ -234,11 +244,31 @@ export class PendingReferenceWorker {
         return "rejected";
       }
 
+      this.metrics.retryScheduled("reference_resolution");
       await ctx.transactions.scheduleReferenceRetry(
         transaction.id,
         referenceBackoffDelayMs(transaction.referenceAttempts),
       );
       return "deferred";
+    });
+  }
+
+  /**
+   * Conta a transacao que **este** worker aplicou, com o `source` original da
+   * submissao: o canal de entrada nao muda por ela ter esperado a referencia.
+   */
+  private observa(
+    transaction: WagerTransaction,
+    kind: ApplyOutcomeKind.Processed | ApplyOutcomeKind.Rejected,
+    failureCode: FailureCode | undefined,
+    iniciado: number,
+  ): void {
+    this.metrics.transactionObserved({
+      outcome: kind === ApplyOutcomeKind.Processed ? "PROCESSED" : "REJECTED",
+      kind: transaction.kind,
+      source: transaction.source,
+      failureCode,
+      durationMs: performance.now() - iniciado,
     });
   }
 

@@ -9,6 +9,7 @@ import { WagerTransaction } from "../../domain/wagering/wager-transaction";
 import { Wallet } from "../../domain/wallet/wallet";
 import type { Clock } from "../ports/clock";
 import type { IdGenerator } from "../ports/id-generator";
+import type { Metrics } from "../ports/metrics";
 import type { UnitOfWork } from "../ports/unit-of-work";
 import { assertUuid } from "../shared/assert-uuid";
 
@@ -44,6 +45,7 @@ export class OpenWallet {
     private readonly uow: UnitOfWork,
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
+    private readonly metrics: Metrics,
   ) {}
 
   async run(command: OpenWalletCommand): Promise<OpenWalletResult> {
@@ -53,6 +55,7 @@ export class OpenWallet {
     const playerId = assertUuid("playerId", command.playerId);
 
     const now = this.clock.now();
+    const iniciado = performance.now();
     const initialBalance = Money.from(command.initialBalance);
     const walletId = this.ids.next();
     const openingTransactionId = this.ids.next();
@@ -121,6 +124,16 @@ export class OpenWallet {
             }),
           ),
         ]);
+
+        // O `OPENING` e uma transacao aplicada com lancamento no ledger. Fora
+        // da serie, `wager_transactions_total` nao fecharia com o livro —
+        // justamente a propriedade que faz a metrica valer algo.
+        this.metrics.transactionObserved({
+          outcome: "PROCESSED",
+          kind: WagerTransactionKind.Opening,
+          source: WagerTransactionSource.Internal,
+          durationMs: performance.now() - iniciado,
+        });
       }
 
       return {

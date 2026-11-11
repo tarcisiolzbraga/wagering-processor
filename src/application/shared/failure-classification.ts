@@ -71,6 +71,14 @@ function sqlState(codigos: readonly string[]): string | undefined {
 }
 
 /**
+ * SQLSTATE do erro, quando houver. Exposto para **rotular metrica**: a classe
+ * de falha diz o que fazer, o estado diz por que aconteceu.
+ */
+export function sqlStateOf(error: unknown): string | undefined {
+  return sqlState(codigosDe(error));
+}
+
+/**
  * Classificacao usada pelos **dois** canais de entrada: a API traduz para
  * status HTTP, o consumer decide entre ack, retry e DLQ. Colapsar as tres
  * classes e o erro classico — rejeicao de negocio voltando para a fila para

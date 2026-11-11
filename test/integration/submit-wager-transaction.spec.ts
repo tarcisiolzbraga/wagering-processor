@@ -23,7 +23,9 @@ import {
 import { WagerTransactionStatus as Status } from "../../src/domain/wagering/wager-transaction-status";
 import { UuidV7Generator } from "../../src/infrastructure/system-clock";
 import { MikroUnitOfWork } from "../../src/infrastructure/persistence/unit-of-work";
+import { NoopMetrics } from "../../src/infrastructure/observability/prometheus-metrics";
 import { openOrmWithFreshSchema } from "../support/database";
+import { loggerQueGrava, type LinhaDeLog } from "../support/logger";
 
 class FixedClock implements Clock {
   constructor(private instante = new Date("2026-11-10T12:00:00.000Z")) {}
@@ -54,14 +56,25 @@ let reconcile: ReconcileWallet;
 
 const ids = new UuidV7Generator();
 const uuid = (): string => crypto.randomUUID();
+const metrics = new NoopMetrics();
+
+/** O que o use case registrou, para o teste poder afirmar sobre o log. */
+const linhasDeLog: LinhaDeLog[] = [];
 
 beforeAll(async () => {
   orm = await openOrmWithFreshSchema();
   uow = new MikroUnitOfWork(orm);
   clock = new FixedClock();
   alarme = new AlarmeEspiao();
-  submit = new SubmitWagerTransaction(uow, clock, ids, new WagerTransactionApplier(ids));
-  open = new OpenWallet(uow, clock, ids);
+  submit = new SubmitWagerTransaction(
+    uow,
+    clock,
+    ids,
+    new WagerTransactionApplier(ids, metrics),
+    loggerQueGrava(linhasDeLog),
+    metrics,
+  );
+  open = new OpenWallet(uow, clock, ids, metrics);
   walletQueries = new WalletQueries(uow);
   txQueries = new WagerTransactionQueries(uow);
   reconcile = new ReconcileWallet(uow, alarme);
@@ -812,5 +825,88 @@ describe("invariante final", () => {
     const resultado = await reconcile.run(walletId);
     expect(resultado?.consistent).toBe(true);
     expect(resultado?.storedBalance.amount).toBe("1099.99");
+  });
+});
+
+describe("log de auditoria", () => {
+  it("toda submissao deixa uma linha com os campos de correlacao", async () => {
+    const { walletId, playerId } = await carteira("100.00");
+    const correlationId = uuid();
+    const cmd = comando(walletId, playerId, { correlationId });
+    linhasDeLog.length = 0;
+
+    const resultado = await submit.run(cmd);
+
+    expect(linhasDeLog).toHaveLength(1);
+    const [linha] = linhasDeLog;
+    expect(linha!.nivel).toBe("info");
+    expect(linha!.campos).toMatchObject({
+      correlationId,
+      transactionId: resultado.transactionId,
+      walletId,
+      providerId: cmd.providerId,
+      externalTransactionId: cmd.externalTransactionId,
+      kind: cmd.kind,
+      source: cmd.source,
+      outcome: "PROCESSED",
+      idempotentReplay: false,
+    });
+  });
+
+  it("nao registra valor monetario", async () => {
+    const { walletId, playerId } = await carteira("500.00");
+    linhasDeLog.length = 0;
+
+    await submit.run(
+      comando(walletId, playerId, { money: { amount: "321.99", currency: "BRL" } }),
+    );
+
+    // O extrato e o ledger. Log vaza para agregador, backup e print em chamada.
+    expect(JSON.stringify(linhasDeLog)).not.toContain("321.99");
+  });
+
+  it("rejeicao de negocio e warn, nao error", async () => {
+    const { walletId, playerId } = await carteira("10.00");
+    linhasDeLog.length = 0;
+
+    await submit.run(
+      comando(walletId, playerId, { money: { amount: "50.00", currency: "BRL" } }),
+    );
+
+    // Aposta sem saldo e operacao normal: poluir `error` com ela treina quem
+    // opera a ignorar o nivel.
+    expect(linhasDeLog[0]!.nivel).toBe("warn");
+    expect(linhasDeLog[0]!.campos["failureCode"]).toBe("INSUFFICIENT_FUNDS");
+  });
+
+  it("falha de entrada nao vaza o valor pela mensagem do erro", async () => {
+    const { walletId, playerId } = await carteira("100.00");
+    linhasDeLog.length = 0;
+
+    // `Money` lança citando o valor submetido, e a redacao age sobre campo,
+    // nao sobre texto dentro de uma string.
+    await expect(
+      submit.run(comando(walletId, playerId, { money: { amount: "25.123", currency: "BRL" } })),
+    ).rejects.toThrow();
+
+    const registrado = JSON.stringify(linhasDeLog);
+    expect(registrado).not.toContain("25.123");
+    expect(linhasDeLog[0]!.campos["erro"]).toBe("InvalidInputError");
+    // Erro do cliente: `warn`, nao `error`.
+    expect(linhasDeLog[0]!.nivel).toBe("warn");
+  });
+
+  it("replay registra o desfecho original marcado como repeticao", async () => {
+    const { walletId, playerId } = await carteira("100.00");
+    const cmd = comando(walletId, playerId);
+    await submit.run(cmd);
+    linhasDeLog.length = 0;
+
+    await submit.run(cmd);
+
+    expect(linhasDeLog[0]!.campos).toMatchObject({
+      outcome: "PROCESSED",
+      idempotentReplay: true,
+    });
   });
 });

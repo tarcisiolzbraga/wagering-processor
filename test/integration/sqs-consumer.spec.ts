@@ -13,10 +13,11 @@ import { WagerTransactionQueries } from "../../src/application/wagering/wager-tr
 import { WagerTransactionStatus as Status } from "../../src/domain/wagering/wager-transaction-status";
 import { FailureCode } from "../../src/domain/shared/failure-code";
 import { SqsMessageQueue } from "../../src/infrastructure/messaging/sqs-message-queue";
-import { ConsoleLogger } from "../../src/infrastructure/observability/console-logger";
 import { MikroUnitOfWork } from "../../src/infrastructure/persistence/unit-of-work";
 import { SystemClock, UuidV7Generator } from "../../src/infrastructure/system-clock";
+import { NoopMetrics } from "../../src/infrastructure/observability/prometheus-metrics";
 import { openOrmWithFreshSchema } from "../support/database";
+import { loggerMudo } from "../support/logger";
 import {
   aguardaAte,
   contaNaFila,
@@ -39,16 +40,23 @@ let queue: SqsMessageQueue;
 let consumer: WagerTransactionConsumer | undefined;
 
 const uuid = (): string => crypto.randomUUID();
+const metrics = new NoopMetrics();
 // Silencioso para nao poluir a saida do teste; o conteudo do log tem teste proprio.
-const logger = new ConsoleLogger("error");
 
 beforeAll(async () => {
   orm = await openOrmWithFreshSchema();
   uow = new MikroUnitOfWork(orm);
   const clock = new SystemClock();
   const ids = new UuidV7Generator();
-  submit = new SubmitWagerTransaction(uow, clock, ids, new WagerTransactionApplier(ids));
-  open = new OpenWallet(uow, clock, ids);
+  submit = new SubmitWagerTransaction(
+    uow,
+    clock,
+    ids,
+    new WagerTransactionApplier(ids, metrics),
+    loggerMudo,
+    metrics,
+  );
+  open = new OpenWallet(uow, clock, ids, metrics);
   walletQueries = new WalletQueries(uow);
   txQueries = new WagerTransactionQueries(uow);
   queue = new SqsMessageQueue(sqs, QUEUE_URL, DLQ_URL);
@@ -68,7 +76,7 @@ afterAll(async () => {
 
 /** Liga o consumer, espera a condicao e desliga. */
 async function consomeAte(condicao: () => Promise<boolean>): Promise<void> {
-  consumer = new WagerTransactionConsumer(queue, submit, logger, {
+  consumer = new WagerTransactionConsumer(queue, submit, loggerMudo, metrics, {
     ...DEFAULT_CONSUMER_OPTIONS,
     waitSeconds: 1,
     idleDelayMs: 20,
