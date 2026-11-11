@@ -297,7 +297,7 @@ describe("WagerTransactionRepository — insert-first", () => {
     expect(lida?.pendingReferenceSince).toBeDefined();
   });
 
-  it("findAwaitingReference devolve as mais antigas primeiro", async () => {
+  it("findDueReferenceRetries devolve as mais antigas primeiro", async () => {
     const { walletId, playerId } = await abrirCarteira();
     const criadas: string[] = [];
 
@@ -309,11 +309,31 @@ describe("WagerTransactionRepository — insert-first", () => {
       criadas.push(tx.id);
     }
 
-    const fila = await uow.read((ctx) => ctx.transactions.findAwaitingReference(50));
-    const posicoes = criadas.map((id) => fila.findIndex((t) => t.id === id));
+    const fila = await uow.read((ctx) => ctx.transactions.findDueReferenceRetries(50));
+    const posicoes = criadas.map((id) =>
+      fila.findIndex((item) => item.transactionId === id),
+    );
     // 30 min atras vem antes de 20, que vem antes de 10.
     expect(posicoes[0]).toBeLessThan(posicoes[2]!);
     expect(posicoes[2]).toBeLessThan(posicoes[1]!);
+    // Devolve o walletId junto: o worker precisa travar a carteira primeiro.
+    // Filtrado pelas proprias: a fila e global e outros testes deste arquivo
+    // tambem deixam transacoes aguardando referencia.
+    const minhas = fila.filter((item) => criadas.includes(item.transactionId));
+    expect(minhas).toHaveLength(3);
+    expect(minhas.every((item) => item.walletId === walletId)).toBe(true);
+  });
+
+  it("findDueReferenceRetries ignora o que ainda nao venceu", async () => {
+    const { walletId, playerId } = await abrirCarteira();
+    const tx = aposta(walletId, playerId, { kind: Kind.Bet });
+    await uow.run((ctx) => ctx.transactions.insertIfAbsent(tx));
+    tx.markPendingReference(new Date());
+    await uow.run((ctx) => ctx.transactions.update(tx));
+    await uow.run((ctx) => ctx.transactions.scheduleReferenceRetry(tx.id, 600_000));
+
+    const fila = await uow.read((ctx) => ctx.transactions.findDueReferenceRetries(50));
+    expect(fila.map((item) => item.transactionId)).not.toContain(tx.id);
   });
 });
 

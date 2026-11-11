@@ -15,6 +15,9 @@ import {
 } from "../../../../src/domain/wagering/wager-transaction-kind";
 import { WagerTransactionStatus as Status } from "../../../../src/domain/wagering/wager-transaction-status";
 import {
+  REFERENCE_MAX_ATTEMPTS,
+  REFERENCE_TTL_MS,
+  referenceBackoffDelayMs,
   WagerTransaction,
   type CreateWagerTransactionProps,
 } from "../../../../src/domain/wagering/wager-transaction";
@@ -393,9 +396,18 @@ describe("WagerTransaction — tentativas de resolver a referencia", () => {
 
   it("esgota por numero de tentativas", () => {
     const tx = pendente();
-    for (let i = 0; i < 15; i += 1) tx.markPendingReference(at);
-    expect(tx.referenceAttempts).toBe(15);
+    for (let i = 0; i < REFERENCE_MAX_ATTEMPTS; i += 1) tx.markPendingReference(at);
+    expect(tx.referenceAttempts).toBe(REFERENCE_MAX_ATTEMPTS);
     expect(tx.hasExhaustedReferenceRetries({ now: at })).toBe(true);
+  });
+
+  it("o TTL e o limite que vale: ele vence antes das tentativas", () => {
+    // Os dois precisam ser coerentes. Com backoff saturado em 15 min, as 100
+    // tentativas cobrem bem mais de 24h — entao quem decide e o TTL.
+    const coberturaMs = Array.from({ length: REFERENCE_MAX_ATTEMPTS }, (_, i) =>
+      referenceBackoffDelayMs(i + 1),
+    ).reduce((soma, atraso) => soma + atraso, 0);
+    expect(coberturaMs).toBeGreaterThan(REFERENCE_TTL_MS);
   });
 
   it("esgota por TTL de 24h mesmo com poucas tentativas", () => {
@@ -421,13 +433,31 @@ describe("WagerTransaction — tentativas de resolver a referencia", () => {
     const tx = WagerTransaction.rehydrate({
       ...props({ kind: Kind.Rollback, referenceExternalTransactionId: "t" }),
       status: Status.PendingReference,
-      referenceAttempts: 14,
+      referenceAttempts: REFERENCE_MAX_ATTEMPTS - 1,
       pendingReferenceSince: at,
     });
-    expect(tx.referenceAttempts).toBe(14);
+    expect(tx.referenceAttempts).toBe(REFERENCE_MAX_ATTEMPTS - 1);
     expect(tx.hasExhaustedReferenceRetries({ now: at })).toBe(false);
     tx.markPendingReference(at);
     expect(tx.hasExhaustedReferenceRetries({ now: at })).toBe(true);
+  });
+});
+
+describe("WagerTransaction — backoff da referencia", () => {
+  it("dobra a partir de 1s e satura em 15 min", () => {
+    expect(referenceBackoffDelayMs(1)).toBe(1_000);
+    expect(referenceBackoffDelayMs(2)).toBe(2_000);
+    expect(referenceBackoffDelayMs(3)).toBe(4_000);
+    expect(referenceBackoffDelayMs(10)).toBe(512_000);
+    // 2^10 * 1s = 17 min, acima do teto de 15.
+    expect(referenceBackoffDelayMs(11)).toBe(900_000);
+    expect(referenceBackoffDelayMs(20)).toBe(900_000);
+    expect(referenceBackoffDelayMs(999)).toBe(900_000);
+  });
+
+  it("tentativa zero ou negativa cai na base", () => {
+    expect(referenceBackoffDelayMs(0)).toBe(1_000);
+    expect(referenceBackoffDelayMs(-5)).toBe(1_000);
   });
 });
 

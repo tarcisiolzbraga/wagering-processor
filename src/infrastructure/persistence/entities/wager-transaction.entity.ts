@@ -23,6 +23,8 @@ export class WagerTransactionEntity {
   observedBalanceAmount!: string | null;
   referenceAttempts!: number;
   pendingReferenceSince!: Date | null;
+  /** Quando o worker deve tentar resolver a referencia de novo. */
+  nextReferenceAttemptAt!: Date | null;
   createdAt!: Date;
   processedAt!: Date | null;
 }
@@ -55,6 +57,7 @@ export const wagerTransactionSchema = new EntitySchema<WagerTransactionEntity>({
     observedBalanceAmount: { type: MoneyAmountType, nullable: true },
     referenceAttempts: { type: "integer" },
     pendingReferenceSince: { type: "datetime", nullable: true },
+    nextReferenceAttemptAt: { type: "datetime", nullable: true },
     createdAt: { type: "datetime" },
     processedAt: { type: "datetime", nullable: true },
   },

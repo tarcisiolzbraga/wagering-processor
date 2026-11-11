@@ -189,6 +189,26 @@ docker compose logs -f consumer &
 docker compose stop -t 40 consumer
 ```
 
+## Worker de referência ausente
+
+O serviço `reference` reprocessa as transações em `PENDING_REFERENCE`.
+
+Referência ausente **não é rejeição**: com entrega *at-least-once* e sem ordenação garantida, um `ROLLBACK` chegar antes da `BET` é comportamento normal. Rejeitar ali deixaria o provedor achando que reverteu enquanto nosso saldo diz que não — divergência financeira com o provedor, que é o pior resultado possível.
+
+| Política | Valor |
+|---|---|
+| Backoff | 1s, 2s, 4s… saturando em **15 min** |
+| Tentativas | 120 (rede de segurança) |
+| TTL | **24h** — é ele que decide |
+
+Os dois precisam ser coerentes: com o backoff saturado em 15 min, as 120 tentativas cobrem cerca de 28h, então o TTL vence primeiro. Há teste fixando essa relação, porque a primeira versão tinha 15 tentativas que esgotavam em ~38 min e tornavam o TTL decorativo.
+
+Esgotado o limite, a transação é rejeitada com `REFERENCE_NOT_FOUND` e o evento correspondente é publicado, para o provedor conciliar do lado dele.
+
+**Ordem de lock.** O worker trava a **carteira antes** da transação, a mesma ordem que o `SubmitWagerTransaction` usa. Ordens opostas entre dois escritores formam ciclo de deadlock — foi assim que a Fase 4 produziu 28 deadlocks em 30 execuções.
+
+Por causa dessa ordem, a fila é lida **sem claim**: reivindicar com `FOR UPDATE SKIP LOCKED` na transação exigiria travá-la antes da carteira. Quem serializa réplicas é a releitura sob o lock da carteira, que confere estado **e vencimento** com o relógio do banco — duas réplicas podem ler a mesma linha, mas a que chega depois do commit da primeira desiste sem consumir tentativa.
+
 ## Publisher da outbox
 
 Os serviços `outbox-1` e `outbox-2` publicam os eventos pendentes. **Duas réplicas de propósito**: o `SKIP LOCKED` e o lease existem justamente para publishers concorrentes, e rodar um só não exercitaria nada disso.

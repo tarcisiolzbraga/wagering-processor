@@ -7,6 +7,7 @@ import {
   defaultOutboxOptions,
   OutboxPublisherWorker,
 } from "../../src/application/wagering/publish-outbox";
+import { WagerTransactionApplier } from "../../src/application/wagering/apply-wager-transaction";
 import { SubmitWagerTransaction } from "../../src/application/wagering/submit-wager-transaction";
 import { OpenWallet } from "../../src/application/wallets/open-wallet";
 import { OutboxMessage } from "../../src/domain/messaging/outbox-message";
@@ -163,7 +164,7 @@ async function leEventos(): Promise<
 beforeAll(async () => {
   orm = await openOrmWithFreshSchema();
   uow = new MikroUnitOfWork(orm);
-  submit = new SubmitWagerTransaction(uow, clock, ids);
+  submit = new SubmitWagerTransaction(uow, clock, ids, new WagerTransactionApplier(ids));
   open = new OpenWallet(uow, clock, ids);
 });
 

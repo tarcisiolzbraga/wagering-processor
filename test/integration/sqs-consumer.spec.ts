@@ -5,6 +5,7 @@ import {
   DEFAULT_CONSUMER_OPTIONS,
   WagerTransactionConsumer,
 } from "../../src/application/wagering/consume-wager-transactions";
+import { WagerTransactionApplier } from "../../src/application/wagering/apply-wager-transaction";
 import { SubmitWagerTransaction } from "../../src/application/wagering/submit-wager-transaction";
 import { OpenWallet } from "../../src/application/wallets/open-wallet";
 import { WalletQueries } from "../../src/application/wallets/wallet-queries";
@@ -46,7 +47,7 @@ beforeAll(async () => {
   uow = new MikroUnitOfWork(orm);
   const clock = new SystemClock();
   const ids = new UuidV7Generator();
-  submit = new SubmitWagerTransaction(uow, clock, ids);
+  submit = new SubmitWagerTransaction(uow, clock, ids, new WagerTransactionApplier(ids));
   open = new OpenWallet(uow, clock, ids);
   walletQueries = new WalletQueries(uow);
   txQueries = new WagerTransactionQueries(uow);

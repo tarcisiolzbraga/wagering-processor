@@ -128,6 +128,21 @@ services:
       disable: true
     stop_grace_period: 20s
 
+  # Worker que reprocessa referencia ausente.
+  #
+  # Uma replica basta. Mais de uma e **seguro** — a releitura sob o lock da
+  # carteira confere o vencimento, entao nenhuma tentativa e consumida duas
+  # vezes — mas nao acelera nada: todas leem a mesma fila e as perdedoras so
+  # adquirem o lock da carteira para desistir.
+  reference:
+    <<: *api
+    environment:
+      <<: *api-env
+      APP_ROLE: reference
+    healthcheck:
+      disable: true
+    stop_grace_period: 20s
+
   api-1:
     <<: *api
     ports: ["3001:3000"]

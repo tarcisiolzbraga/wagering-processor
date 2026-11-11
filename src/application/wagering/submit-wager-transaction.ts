@@ -1,10 +1,4 @@
-import {
-  WagerTransactionPendingReference,
-  WagerTransactionProcessed,
-  WagerTransactionRejected,
-  WalletBalanceChanged,
-} from "../../domain/events/wager-transaction-events";
-import type { EventContext } from "../../domain/events/integration-event";
+import { WagerTransactionPendingReference } from "../../domain/events/wager-transaction-events";
 import { InboxMessage } from "../../domain/messaging/inbox-message";
 import { OutboxMessage } from "../../domain/messaging/outbox-message";
 import { Money, type MoneyProps } from "../../domain/money/money";
@@ -13,19 +7,24 @@ import {
   InvariantViolationError,
 } from "../../domain/shared/domain-error";
 import { FailureCode } from "../../domain/shared/failure-code";
-import { LedgerDirection } from "../../domain/wallet/ledger-direction";
-import type { Wallet } from "../../domain/wallet/wallet";
 import type {
   WagerTransactionKind,
   WagerTransactionSource,
 } from "../../domain/wagering/wager-transaction-kind";
 import { WagerTransactionStatus } from "../../domain/wagering/wager-transaction-status";
-import { WagerTransaction } from "../../domain/wagering/wager-transaction";
+import {
+  referenceBackoffDelayMs,
+  WagerTransaction,
+} from "../../domain/wagering/wager-transaction";
 import type { Clock } from "../ports/clock";
 import type { IdGenerator } from "../ports/id-generator";
 import { InsertTransactionOutcome } from "../ports/repositories";
 import type { TransactionalContext, UnitOfWork } from "../ports/unit-of-work";
 import { assertUuid } from "../shared/assert-uuid";
+import {
+  ApplyOutcomeKind,
+  type WagerTransactionApplier,
+} from "./apply-wager-transaction";
 import { computePayloadHash } from "./payload-hash";
 
 export interface SubmitWagerTransactionCommand {
@@ -80,6 +79,7 @@ export class SubmitWagerTransaction {
     private readonly uow: UnitOfWork,
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
+    private readonly applier: WagerTransactionApplier,
   ) {}
 
   async run(entrada: SubmitWagerTransactionCommand): Promise<SubmitWagerTransactionResult> {
@@ -126,9 +126,6 @@ export class SubmitWagerTransaction {
       // Medido antes da correcao: 28 deadlocks em 30 execucoes do cenario da
       // secao 8. Com o lock primeiro, o FOR KEY SHARE do FK ja esta coberto
       // pelo FOR UPDATE, e nao ha upgrade.
-      //
-      // O custo e que um replay duplicado passa pelo lock antes de ser
-      // detectado. Vale: correcao acima de vazao.
       const wallet = await ctx.wallets.findByIdForUpdate(command.walletId);
 
       // Os FKs compostos exigem que a carteira exista e que a moeda seja a
@@ -196,120 +193,35 @@ export class SubmitWagerTransaction {
         return replayOf(anterior);
       }
 
-      const ctx4 = { ctx, transaction, wallet, now, command };
-
-      if (wallet.playerId !== command.playerId) {
-        return this.rejectAndRecord(ctx4, FailureCode.PlayerMismatch);
-      }
-
-      // ---- 5. Resolucao da referencia, dentro do lock.
-      let reference: WagerTransaction | undefined;
-      if (transaction.requiresReference()) {
-        const resolucao = await this.resolveReference(ctx4);
-        if ("failureCode" in resolucao) {
-          return this.rejectAndRecord(ctx4, resolucao.failureCode);
-        }
-        if (resolucao.pending) {
-          return this.markPendingReference(ctx4);
-        }
-        reference = resolucao.reference;
-      }
-
-      // ---- 6. LOSS: registra o resultado da rodada sem mover saldo.
-      if (!transaction.affectsBalance()) {
-        transaction.markProcessed({ observedBalance: wallet.balance, at: now });
-        await ctx.transactions.update(transaction);
-        await this.enqueue(ctx, [
-          WagerTransactionProcessed.from(transaction, this.eventContext(command, now)),
-        ]);
-        return {
-          outcome: SubmitOutcome.Processed,
-          transactionId: transaction.id,
-          status: transaction.status,
-          balance: wallet.balance.toJSON(),
-          idempotentReplay: false,
-        };
-      }
-
-      // ---- 7. Movimenta o saldo.
-      const direction = transaction.ledgerDirectionFor(reference);
-
-      if (direction === LedgerDirection.Debit && !wallet.hasSufficientBalance(transaction.money)) {
-        // Codigos distintos de proposito: aposta sem saldo e operacao normal,
-        // reversao que nao cabe significa estado inconsistente com o provedor.
-        return this.rejectAndRecord(
-          ctx4,
-          transaction.requiresReference()
-            ? FailureCode.ReversalWouldOverdraw
-            : FailureCode.InsufficientFunds,
-        );
-      }
-
-      const versionBefore = wallet.version;
-      const movement = {
-        entryId: this.ids.next(),
-        transactionId: transaction.id,
-        money: transaction.money,
-        at: now,
-      };
-      const entry =
-        direction === LedgerDirection.Credit ? wallet.credit(movement) : wallet.debit(movement);
-
-      transaction.markProcessed({
-        referenceTransactionId: reference?.id,
-        observedBalance: wallet.balance,
-        at: now,
+      // ---- 4. Aplica. O mesmo aplicador que o worker de referencia usa.
+      const resultado = await this.applier.apply({
+        ctx,
+        transaction,
+        wallet,
+        now,
+        correlationId: command.correlationId,
+        causationId: command.inbox?.messageId,
       });
 
-      await ctx.transactions.update(transaction);
-      await ctx.ledger.insert(entry);
-
-      if (!(await ctx.wallets.updateBalance(wallet, versionBefore))) {
-        // O FOR UPDATE deveria ter impedido. Chegar aqui e bug de caminho.
-        throw new InvariantViolationError(
-          `saldo da carteira ${wallet.id} mudou sob o lock (version esperada ${versionBefore})`,
-        );
+      if (resultado.kind === ApplyOutcomeKind.ReferenceMissing) {
+        return this.markPendingReference(ctx, transaction, now, command);
       }
 
-      const eventCtx = this.eventContext(command, now);
-      await this.enqueue(ctx, [
-        WagerTransactionProcessed.from(transaction, eventCtx),
-        WalletBalanceChanged.from(wallet, entry, {
-          ...eventCtx,
-          eventId: this.ids.next(),
-        }),
-      ]);
-
       return {
-        outcome: SubmitOutcome.Processed,
+        outcome:
+          resultado.kind === ApplyOutcomeKind.Processed
+            ? SubmitOutcome.Processed
+            : SubmitOutcome.Rejected,
         transactionId: transaction.id,
         status: transaction.status,
-        balance: wallet.balance.toJSON(),
+        failureCode: resultado.failureCode,
+        balance: resultado.balance,
         idempotentReplay: false,
       };
     });
   }
 
   // ------------------------------------------------------------- auxiliares
-
-  private eventContext(
-    command: SubmitWagerTransactionCommand,
-    occurredAt: Date,
-  ): EventContext {
-    return {
-      eventId: this.ids.next(),
-      correlationId: command.correlationId,
-      causationId: command.inbox?.messageId,
-      occurredAt,
-    };
-  }
-
-  private async enqueue(
-    ctx: TransactionalContext,
-    events: ReadonlyArray<Parameters<typeof OutboxMessage.enqueue>[0]>,
-  ): Promise<void> {
-    await ctx.outbox.enqueue(events.map((event) => OutboxMessage.enqueue(event)));
-  }
 
   /** Rejeicao que o schema impede de persistir: auditada por log e metrica. */
   private rejectWithoutRecord(failureCode: FailureCode): SubmitWagerTransactionResult {
@@ -320,44 +232,32 @@ export class SubmitWagerTransaction {
     };
   }
 
-  private async rejectAndRecord(
-    scope: {
-      ctx: TransactionalContext;
-      transaction: WagerTransaction;
-      wallet: Wallet;
-      now: Date;
-      command: SubmitWagerTransactionCommand;
-    },
-    failureCode: FailureCode,
+  /**
+   * Referencia ausente na primeira submissao: a transacao fica aguardando e o
+   * worker reprocessa com backoff. O instante da proxima tentativa e calculado
+   * pelo **banco**, porque e comparado por outro processo.
+   */
+  private async markPendingReference(
+    ctx: TransactionalContext,
+    transaction: WagerTransaction,
+    now: Date,
+    command: SubmitWagerTransactionCommand,
   ): Promise<SubmitWagerTransactionResult> {
-    const { ctx, transaction, wallet, now, command } = scope;
-    transaction.reject({ code: failureCode, observedBalance: wallet.balance, at: now });
-    await ctx.transactions.update(transaction);
-    await this.enqueue(ctx, [
-      WagerTransactionRejected.from(transaction, this.eventContext(command, now)),
-    ]);
-
-    return {
-      outcome: SubmitOutcome.Rejected,
-      transactionId: transaction.id,
-      status: transaction.status,
-      failureCode,
-      balance: wallet.balance.toJSON(),
-      idempotentReplay: false,
-    };
-  }
-
-  private async markPendingReference(scope: {
-    ctx: TransactionalContext;
-    transaction: WagerTransaction;
-    now: Date;
-    command: SubmitWagerTransactionCommand;
-  }): Promise<SubmitWagerTransactionResult> {
-    const { ctx, transaction, now, command } = scope;
     transaction.markPendingReference(now);
     await ctx.transactions.update(transaction);
-    await this.enqueue(ctx, [
-      WagerTransactionPendingReference.from(transaction, this.eventContext(command, now)),
+    await ctx.transactions.scheduleReferenceRetry(
+      transaction.id,
+      referenceBackoffDelayMs(transaction.referenceAttempts),
+    );
+    await ctx.outbox.enqueue([
+      OutboxMessage.enqueue(
+        WagerTransactionPendingReference.from(transaction, {
+          eventId: this.ids.next(),
+          correlationId: command.correlationId,
+          causationId: command.inbox?.messageId,
+          occurredAt: now,
+        }),
+      ),
     ]);
 
     return {
@@ -366,57 +266,6 @@ export class SubmitWagerTransaction {
       status: transaction.status,
       idempotentReplay: false,
     };
-  }
-
-  /**
-   * Resolve e valida a referencia. Referencia ausente **nao** e rejeicao: com
-   * entrega at-least-once e sem ordenacao garantida, um ROLLBACK chegar antes
-   * da BET e comportamento normal. Rejeitar ali deixaria o provedor achando que
-   * reverteu enquanto nosso saldo diz que nao.
-   */
-  private async resolveReference(scope: {
-    ctx: TransactionalContext;
-    transaction: WagerTransaction;
-  }): Promise<
-    { reference: WagerTransaction; pending: false } | { pending: true } | { failureCode: FailureCode }
-  > {
-    const { ctx, transaction } = scope;
-    const externalId = transaction.referenceExternalTransactionId;
-    if (externalId === undefined) {
-      throw new InvariantViolationError(
-        `${transaction.kind} ${transaction.id} exige referencia mas chegou sem ela`,
-      );
-    }
-
-    const reference = await ctx.transactions.findByProviderAndExternalId(
-      transaction.providerId,
-      externalId,
-    );
-    if (!reference) return { pending: true };
-
-    const mesmoEscopo =
-      reference.providerId === transaction.providerId &&
-      reference.playerId === transaction.playerId &&
-      reference.walletId === transaction.walletId &&
-      reference.roundId === transaction.roundId &&
-      reference.money.currency === transaction.money.currency;
-    if (!mesmoEscopo) return { failureCode: FailureCode.ReferenceScopeMismatch };
-
-    if (reference.status !== WagerTransactionStatus.Processed) {
-      return { failureCode: FailureCode.ReferenceNotProcessed };
-    }
-    if (!reference.isReversibleBy(transaction.kind)) {
-      return { failureCode: FailureCode.ReferenceKindNotReversible };
-    }
-    if (!reference.money.equals(transaction.money)) {
-      // Reversao parcial esta fora de escopo: o valor tem que ser igual.
-      return { failureCode: FailureCode.ReferenceAmountMismatch };
-    }
-    if (await ctx.transactions.findProcessedReversalOf(reference.id)) {
-      return { failureCode: FailureCode.ReferenceAlreadyReversed };
-    }
-
-    return { reference, pending: false };
   }
 }
 
