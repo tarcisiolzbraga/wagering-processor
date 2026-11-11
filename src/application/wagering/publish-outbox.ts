@@ -31,7 +31,13 @@ export function defaultOutboxOptions(workerId: string): OutboxPublisherOptions {
     batchSize: 10,
     leaseSeconds: 30,
     idleDelayMs: 200,
-    maxAttempts: 10,
+    // 20 tentativas, nao 10. O numero sai do horizonte pretendido, nao do
+    // gosto: com backoff dobrando de 1s e teto de 5 min, 10 tentativas cobrem
+    // 8,5 min e **nunca** alcancam o teto — a maior espera usada seria de
+    // 256s. O teto ficaria decorativo e uma indisponibilidade de broker de
+    // quinze minutos custaria o evento. Com 20, o horizonte vai a ~58 min e o
+    // teto passa a valer, que era a intencao de "o evento tem que sair".
+    maxAttempts: 20,
     lagWarnMs: 30_000,
   };
 }

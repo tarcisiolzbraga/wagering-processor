@@ -8,6 +8,7 @@ import {
 import { Money } from "../../../../src/domain/money/money";
 import { InvariantViolationError } from "../../../../src/domain/shared/domain-error";
 import { Wallet } from "../../../../src/domain/wallet/wallet";
+import { defaultOutboxOptions } from "../../../../src/application/wagering/publish-outbox";
 
 const brl = (amount: string) => Money.from({ amount, currency: "BRL" });
 const at = new Date("2026-11-10T10:00:00.000Z");
@@ -126,5 +127,26 @@ describe("OutboxMessage — backoff", () => {
     expect(outbox.attempts).toBe(4);
     expect(outbox.isPending()).toBe(true);
     expect(outbox.isDue(at)).toBe(false);
+  });
+});
+
+describe("horizonte de retentativa da outbox", () => {
+  it("as tentativas cobrem mais de meia hora e alcancam o teto do backoff", () => {
+    // Dois limites que precisam ser coerentes. Com teto de 5 min, 10
+    // tentativas cobririam 8,5 min e a maior espera usada seria de 256s: o
+    // teto nunca entraria em jogo e seria decoracao, e o horizonte real seria
+    // um terco do que o comentario prometia.
+    const { maxAttempts } = defaultOutboxOptions("teste");
+    let total = 0;
+    let alcancouOTeto = false;
+
+    for (let tentativa = 1; tentativa < maxAttempts; tentativa += 1) {
+      const atraso = backoffDelayMs(tentativa);
+      total += atraso;
+      if (atraso === 5 * 60 * 1000) alcancouOTeto = true;
+    }
+
+    expect(alcancouOTeto).toBe(true);
+    expect(total).toBeGreaterThan(30 * 60 * 1000);
   });
 });
