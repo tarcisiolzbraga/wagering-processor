@@ -17,8 +17,8 @@ export interface OutboxPublisherOptions {
    *
    * Mais generoso que o limite da fila de entrada (5): ali reenviar e do
    * provedor, aqui o evento **tem** que sair, e uma indisponibilidade de
-   * broker nao deve custar o evento. Com o backoff saturado em 5 min, 10
-   * tentativas cobrem cerca de 25 min de instabilidade.
+   * broker nao deve custar o evento. O horizonte que o numero compra sai
+   * do backoff; a aritmetica fica em `defaultOutboxOptions`, num lugar so.
    */
   readonly maxAttempts: number;
   /** Acima disto o atraso da outbox vira aviso. */

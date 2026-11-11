@@ -22,10 +22,10 @@ const D = Decimal.clone({
 });
 
 const SCALE = 2;
-/** NUMERIC(20,2) guarda 18 digitos antes da virgula. */
+/** Teto de 18 digitos inteiros, igual ao CHECK de capacidade do schema. */
 const MAX_INTEGER_DIGITS = 18;
 
-/** 10^18: o primeiro valor que NUMERIC(20,2) nao consegue guardar. */
+/** 10^18: o primeiro valor que o CHECK de capacidade do schema recusa. */
 const CAPACITY = new D(10).pow(MAX_INTEGER_DIGITS);
 
 const DECIMAL_SHAPE = /^-?\d+(\.\d+)?$/;
@@ -72,7 +72,7 @@ export class Money {
     if (value.abs().greaterThanOrEqualTo(CAPACITY)) {
       throw new DomainRuleViolationError(
         FailureCode.AmountOverflow,
-        `valor computado ${value.toFixed(2)} excede a capacidade de NUMERIC(20,2)`,
+        `valor computado ${value.toFixed(2)} excede o teto de 18 digitos inteiros`,
       );
     }
     return new Money(value, currency);

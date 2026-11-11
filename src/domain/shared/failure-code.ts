@@ -30,9 +30,10 @@ export enum FailureCode {
   ReferenceScopeMismatch = "REFERENCE_SCOPE_MISMATCH",
 
   /**
-   * Valor computado estourou a capacidade de NUMERIC(20,2). Rejeitar aqui em
-   * vez de deixar o INSERT falhar com 22003: um erro do banco seria
-   * classificado como transitorio e entraria em loop de retry ate a DLQ.
+   * Valor computado estourou o teto de 18 digitos inteiros que o schema
+   * garante. Rejeitar aqui em vez de deixar o INSERT falhar com 22003: um
+   * erro do banco seria classificado como transitorio e entraria em loop
+   * de retry ate a DLQ.
    */
   AmountOverflow = "AMOUNT_OVERFLOW",
 

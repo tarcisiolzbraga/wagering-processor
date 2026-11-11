@@ -194,7 +194,7 @@ describe("Money — predicados", () => {
   });
 });
 
-describe("Money — capacidade de NUMERIC(20,2)", () => {
+describe("Money — teto de 18 digitos inteiros", () => {
   it("rejeita soma que estoura a capacidade da coluna", () => {
     // Sem isso o valor passaria por todo o dominio e morreria no INSERT com
     // 22003, o que seria lido como falha transitoria e viraria loop de retry.
