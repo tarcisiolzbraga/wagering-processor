@@ -2,7 +2,7 @@
 
 O que foi decidido, por quê, e o que se perdeu em troca. Setup e comandos estão no [`README.md`](./README.md).
 
-**Estado:** implementação completa, 547 testes — unidade, integração contra PostgreSQL e LocalStack reais, e concorrência com múltiplos processos.
+**Estado:** implementação completa, 553 testes — unidade, integração contra PostgreSQL e LocalStack reais, e concorrência com múltiplos processos.
 
 ---
 
@@ -112,6 +112,8 @@ Fora: header, `messageId`, `occurredAt` e a própria chave — metadados de tran
 
 **Mesma chave com payload diferente é conflito, não replay** — devolver o resultado antigo faria a operação nova desaparecer sem rastro. **Replay devolve o saldo da época**, guardado em `observed_balance_amount` na própria transação: recalcular devolveria o saldo atual, e um provedor que concilia por ele acusaria divergência.
 
+A canonicalização vive em [`src/domain/shared/canonical-json.ts`](src/domain/shared/canonical-json.ts) e serve também ao envelope de evento, que sai com chaves ordenadas para que dois publicadores produzam bytes idênticos. Duas implementações da mesma ordenação divergiriam no primeiro ajuste.
+
 ---
 
 ## 7. Atomicidade: inbox, ledger e outbox
@@ -151,7 +153,7 @@ Três migrations versionadas e **reversíveis**:
 | [`20261111110000`](src/infrastructure/persistence/migrations/Migration20261111110000.ts) | lease da outbox: `locked_until`, `locked_by`, `abandoned_at`, `last_error` e o índice parcial de reivindicação |
 | [`20261111150000`](src/infrastructure/persistence/migrations/Migration20261111150000.ts) | `next_reference_attempt_at`, `CHECK` de escopo, índice parcial e a coluna nova na lista de mutáveis do gatilho |
 
-Cada constraint tem um teste que **tenta violá-la** ([`schema-constraints.spec.ts`](test/integration/schema-constraints.spec.ts)) — garantia não verificada não é garantia.
+Cada constraint tem um teste que **tenta violá-la** ([`schema-constraints.spec.ts`](test/integration/schema-constraints.spec.ts)) — garantia não verificada não é garantia. E a reversibilidade é testada de verdade ([`migrations.spec.ts`](test/integration/migrations.spec.ts)): reverte as três, confere que não sobrou tabela, coluna, tipo enum, função nem trigger, reaplica e compara o retrato do schema com o de antes. Um `down` que esquece um tipo só falha quando alguém precisa voltar uma versão em produção.
 
 ### Reversão única
 

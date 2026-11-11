@@ -1,3 +1,4 @@
+import { sortKeys } from "../shared/canonical-json";
 export interface IntegrationEventProps<T> {
   readonly eventId: string;
   readonly aggregateId: string;
@@ -62,9 +63,15 @@ export abstract class IntegrationEvent<T> {
     this.data = props.data;
   }
 
-  /** Envelope serializado, gravado no payload da outbox. */
+  /**
+   * Envelope serializado, gravado no payload da outbox.
+   *
+   * Chaves ordenadas: dois publicadores que reivindiquem o mesmo evento
+   * produzem bytes identicos, e quem compara payloads do outro lado nao ve
+   * diferenca que nao existe.
+   */
   toJSON(): SerializedIntegrationEvent<T> {
-    return {
+    return sortKeys({
       eventId: this.eventId,
       eventType: this.eventType,
       aggregateId: this.aggregateId,
@@ -73,6 +80,6 @@ export abstract class IntegrationEvent<T> {
       occurredAt: this.occurredAt.toISOString(),
       version: this.version,
       data: this.data as T,
-    };
+    });
   }
 }
