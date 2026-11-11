@@ -1,0 +1,491 @@
+{
+  "ambiente": {
+    "cpu": "Intel(R) Core(TM) 7 240H",
+    "nucleos": 16,
+    "memoriaGb": 31,
+    "bun": "1.4.4",
+    "plataforma": "linux x64",
+    "docker": "Docker version 29.9.2, build a82e528",
+    "postgres": "postgres:16-alpine",
+    "localstack": "localstack/localstack:3",
+    "commit": "1cb75ac",
+    "instanciasApi": 3,
+    "instanciasPublisher": 2,
+    "medidoEm": "2026-11-11T18:05:26.269Z"
+  },
+  "metodologia": {
+    "laco": "fechado",
+    "concorrencia": 32,
+    "duracaoSegundosPorPerfil": 15,
+    "aquecimentoSegundos": 3,
+    "valorPorAposta": "0.01",
+    "saldoInicial": "900000.00",
+    "instanciasAlternadas": "http://127.0.0.1:3001,http://127.0.0.1:3002,http://127.0.0.1:3003"
+  },
+  "perfis": [
+    {
+      "nome": "carteiras-distintas",
+      "descricao": "32 carteiras, uma por trabalhador",
+      "mede": "throughput de pico sem contenção — o teto do sistema",
+      "duracaoSegundos": 15.02,
+      "concorrencia": 32,
+      "operacoes": 14448,
+      "throughputPorSegundo": 961.74,
+      "latenciaMs": {
+        "amostras": 14448,
+        "p50": 32.43,
+        "p95": 56.05,
+        "p99": 65.44,
+        "media": 33.24,
+        "max": 89.7
+      },
+      "porClasse": {
+        "aplicada": 14448,
+        "replay": 0,
+        "negocio": 0,
+        "cliente": 0,
+        "infra": 0
+      },
+      "taxaDeErroInfra": 0,
+      "metricas": {
+        "processadas": 14448,
+        "recusadas": 0,
+        "erros": 0,
+        "invalidas": 0,
+        "duplicatas": 0,
+        "conflitosDeLock": 0,
+        "retries": 0
+      },
+      "outboxLagSegundos": {
+        "media": 6.36,
+        "pico": 11.83,
+        "serie": [
+          {
+            "segundo": 0.03,
+            "valor": 1.18
+          },
+          {
+            "segundo": 1.05,
+            "valor": 1.66
+          },
+          {
+            "segundo": 2.06,
+            "valor": 2.2
+          },
+          {
+            "segundo": 3.08,
+            "valor": 2.7
+          },
+          {
+            "segundo": 4.1,
+            "valor": 3.26
+          },
+          {
+            "segundo": 5.13,
+            "valor": 3.84
+          },
+          {
+            "segundo": 6.16,
+            "valor": 4.44
+          },
+          {
+            "segundo": 7.18,
+            "valor": 5.27
+          },
+          {
+            "segundo": 8.21,
+            "valor": 5.92
+          },
+          {
+            "segundo": 9.24,
+            "valor": 6.63
+          },
+          {
+            "segundo": 10.26,
+            "valor": 7.35
+          },
+          {
+            "segundo": 11.29,
+            "valor": 8.01
+          },
+          {
+            "segundo": 12.31,
+            "valor": 8.69
+          },
+          {
+            "segundo": 13.35,
+            "valor": 9.38
+          },
+          {
+            "segundo": 14.37,
+            "valor": 10.08
+          },
+          {
+            "segundo": 15.39,
+            "valor": 10.75
+          },
+          {
+            "segundo": 16.41,
+            "valor": 11.29
+          },
+          {
+            "segundo": 17.43,
+            "valor": 11.83
+          }
+        ]
+      },
+      "invariante": {
+        "carteirasConferidas": 32,
+        "consistentes": 32
+      }
+    },
+    {
+      "nome": "carteira-quente",
+      "descricao": "uma carteira, 32 trabalhadores",
+      "mede": "contenção no lock da carteira",
+      "duracaoSegundos": 15.16,
+      "concorrencia": 32,
+      "operacoes": 2846,
+      "throughputPorSegundo": 187.77,
+      "latenciaMs": {
+        "amostras": 2846,
+        "p50": 170.42,
+        "p95": 194.48,
+        "p99": 206.84,
+        "media": 169.56,
+        "max": 233.22
+      },
+      "porClasse": {
+        "aplicada": 2846,
+        "replay": 0,
+        "negocio": 0,
+        "cliente": 0,
+        "infra": 0
+      },
+      "taxaDeErroInfra": 0,
+      "metricas": {
+        "processadas": 2846,
+        "recusadas": 0,
+        "erros": 0,
+        "invalidas": 0,
+        "duplicatas": 0,
+        "conflitosDeLock": 0,
+        "retries": 0
+      },
+      "outboxLagSegundos": {
+        "media": 0.15,
+        "pico": 0.2,
+        "serie": [
+          {
+            "segundo": 0.02,
+            "valor": 0.16
+          },
+          {
+            "segundo": 1.04,
+            "valor": 0.18
+          },
+          {
+            "segundo": 2.07,
+            "valor": 0.19
+          },
+          {
+            "segundo": 3.1,
+            "valor": 0.19
+          },
+          {
+            "segundo": 4.12,
+            "valor": 0.19
+          },
+          {
+            "segundo": 5.14,
+            "valor": 0.18
+          },
+          {
+            "segundo": 6.15,
+            "valor": 0.17
+          },
+          {
+            "segundo": 7.17,
+            "valor": 0.17
+          },
+          {
+            "segundo": 8.19,
+            "valor": 0.17
+          },
+          {
+            "segundo": 9.21,
+            "valor": 0.18
+          },
+          {
+            "segundo": 10.23,
+            "valor": 0.2
+          },
+          {
+            "segundo": 11.25,
+            "valor": 0.18
+          },
+          {
+            "segundo": 12.26,
+            "valor": 0.2
+          },
+          {
+            "segundo": 13.28,
+            "valor": 0.18
+          },
+          {
+            "segundo": 14.3,
+            "valor": 0.19
+          },
+          {
+            "segundo": 15.31,
+            "valor": 0
+          },
+          {
+            "segundo": 16.33,
+            "valor": 0
+          },
+          {
+            "segundo": 17.34,
+            "valor": 0
+          }
+        ]
+      },
+      "invariante": {
+        "carteirasConferidas": 1,
+        "consistentes": 1
+      }
+    },
+    {
+      "nome": "replay",
+      "descricao": "mesma chave de idempotência, repetida",
+      "mede": "custo do caminho de deduplicação",
+      "duracaoSegundos": 15.11,
+      "concorrencia": 32,
+      "operacoes": 4365,
+      "throughputPorSegundo": 288.94,
+      "latenciaMs": {
+        "amostras": 4365,
+        "p50": 109.44,
+        "p95": 127.2,
+        "p99": 137.11,
+        "media": 110.36,
+        "max": 154.66
+      },
+      "porClasse": {
+        "aplicada": 0,
+        "replay": 4365,
+        "negocio": 0,
+        "cliente": 0,
+        "infra": 0
+      },
+      "taxaDeErroInfra": 0,
+      "metricas": {
+        "processadas": 0,
+        "recusadas": 0,
+        "erros": 0,
+        "invalidas": 0,
+        "duplicatas": 4365,
+        "conflitosDeLock": 0,
+        "retries": 0
+      },
+      "outboxLagSegundos": {
+        "media": 0,
+        "pico": 0,
+        "serie": [
+          {
+            "segundo": 0.02,
+            "valor": 0
+          },
+          {
+            "segundo": 1.03,
+            "valor": 0
+          },
+          {
+            "segundo": 2.05,
+            "valor": 0
+          },
+          {
+            "segundo": 3.07,
+            "valor": 0
+          },
+          {
+            "segundo": 4.08,
+            "valor": 0
+          },
+          {
+            "segundo": 5.09,
+            "valor": 0
+          },
+          {
+            "segundo": 6.1,
+            "valor": 0
+          },
+          {
+            "segundo": 7.11,
+            "valor": 0
+          },
+          {
+            "segundo": 8.13,
+            "valor": 0
+          },
+          {
+            "segundo": 9.14,
+            "valor": 0
+          },
+          {
+            "segundo": 10.15,
+            "valor": 0
+          },
+          {
+            "segundo": 11.17,
+            "valor": 0
+          },
+          {
+            "segundo": 12.18,
+            "valor": 0
+          },
+          {
+            "segundo": 13.2,
+            "valor": 0
+          },
+          {
+            "segundo": 14.21,
+            "valor": 0
+          },
+          {
+            "segundo": 15.22,
+            "valor": 0
+          },
+          {
+            "segundo": 16.24,
+            "valor": 0
+          },
+          {
+            "segundo": 17.25,
+            "valor": 0
+          }
+        ]
+      },
+      "invariante": {
+        "carteirasConferidas": 1,
+        "consistentes": 1
+      }
+    },
+    {
+      "nome": "saldo-escasso",
+      "descricao": "uma carteira sem saldo para a maioria das apostas",
+      "mede": "custo do caminho de recusa por saldo insuficiente",
+      "duracaoSegundos": 15.12,
+      "concorrencia": 32,
+      "operacoes": 3612,
+      "throughputPorSegundo": 238.89,
+      "latenciaMs": {
+        "amostras": 3612,
+        "p50": 128.59,
+        "p95": 158.66,
+        "p99": 171.62,
+        "media": 133.41,
+        "max": 217.8
+      },
+      "porClasse": {
+        "aplicada": 0,
+        "replay": 0,
+        "negocio": 3612,
+        "cliente": 0,
+        "infra": 0
+      },
+      "taxaDeErroInfra": 0,
+      "metricas": {
+        "processadas": 0,
+        "recusadas": 3612,
+        "erros": 0,
+        "invalidas": 0,
+        "duplicatas": 0,
+        "conflitosDeLock": 0,
+        "retries": 0
+      },
+      "outboxLagSegundos": {
+        "media": 0.13,
+        "pico": 0.2,
+        "serie": [
+          {
+            "segundo": 0.02,
+            "valor": 0.16
+          },
+          {
+            "segundo": 1.04,
+            "valor": 0.16
+          },
+          {
+            "segundo": 2.06,
+            "valor": 0.2
+          },
+          {
+            "segundo": 3.08,
+            "valor": 0.15
+          },
+          {
+            "segundo": 4.09,
+            "valor": 0.15
+          },
+          {
+            "segundo": 5.11,
+            "valor": 0.15
+          },
+          {
+            "segundo": 6.13,
+            "valor": 0.15
+          },
+          {
+            "segundo": 7.16,
+            "valor": 0.16
+          },
+          {
+            "segundo": 8.18,
+            "valor": 0.15
+          },
+          {
+            "segundo": 9.21,
+            "valor": 0.15
+          },
+          {
+            "segundo": 10.23,
+            "valor": 0.18
+          },
+          {
+            "segundo": 11.25,
+            "valor": 0.14
+          },
+          {
+            "segundo": 12.26,
+            "valor": 0.16
+          },
+          {
+            "segundo": 13.28,
+            "valor": 0.16
+          },
+          {
+            "segundo": 14.3,
+            "valor": 0.15
+          },
+          {
+            "segundo": 15.32,
+            "valor": 0
+          },
+          {
+            "segundo": 16.33,
+            "valor": 0
+          },
+          {
+            "segundo": 17.35,
+            "valor": 0
+          }
+        ]
+      },
+      "invariante": {
+        "carteirasConferidas": 1,
+        "consistentes": 1
+      }
+    }
+  ]
+}
