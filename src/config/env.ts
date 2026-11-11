@@ -8,7 +8,9 @@ const schema = z.object({
   APP_ROLE: z.enum(["api", "consumer", "outbox", "reference"]).default("api"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
-  LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error"]).default("info"),
+  // `silent` existe para a suite de teste: sem ele, cada transacao do teste de
+  // integracao escreve uma linha e o resultado do `bun test` fica ilegivel.
+  LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "silent"]).default("info"),
 
   POSTGRES_HOST: z.string().min(1),
   POSTGRES_PORT: z.coerce.number().int().positive().default(5432),

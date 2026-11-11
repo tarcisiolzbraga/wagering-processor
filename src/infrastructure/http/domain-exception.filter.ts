@@ -14,6 +14,12 @@ import {
   DomainRuleViolationError,
   InvalidInputError,
 } from "../../domain/shared/domain-error";
+import {
+  errorMessageForLog,
+  errorNameOf,
+  errorStackForLog,
+} from "../../application/shared/error-fields";
+import type { Logger } from "../../application/ports/logger";
 
 /** Quanto o provedor deve esperar antes de reenviar numa falha transitoria. */
 const RETRY_AFTER_SECONDS = 2;
@@ -34,6 +40,12 @@ interface ErrorBody {
  */
 @Catch()
 export class DomainExceptionFilter implements ExceptionFilter {
+  // Recebe o logger do processo em vez de escrever no console: so por ele o
+  // registro respeita `LOG_LEVEL`, ganha os campos fixos e sai no mesmo
+  // formato do resto — tres divergencias que faziam o log de 500 ser o unico
+  // que um agregador nao conseguia correlacionar.
+  constructor(private readonly logger: Logger) {}
+
   catch(exception: unknown, host: ArgumentsHost): void {
     const http = host.switchToHttp();
     const response = http.getResponse<Response>();
@@ -74,20 +86,15 @@ export class DomainExceptionFilter implements ExceptionFilter {
       return;
     }
 
-    console.error(
-      JSON.stringify({
-        level: "error",
-        msg: "requisicao falhou",
-        status,
-        method: request.method,
-        path: request.url,
-        correlationId: request.correlationId,
-        error: exception instanceof Error ? exception.name : typeof exception,
-        // Sem payload financeiro: a mensagem do erro de dominio e suficiente.
-        reason: exception instanceof Error ? exception.message : String(exception),
-        stack: exception instanceof Error ? exception.stack : undefined,
-      }),
-    );
+    this.logger.error("requisicao falhou", {
+      status,
+      method: request.method,
+      path: request.url,
+      correlationId: request.correlationId,
+      erro: errorNameOf(exception),
+      mensagem: errorMessageForLog(exception),
+      stack: errorStackForLog(exception),
+    });
   }
 
   private traduz(exception: unknown): { status: number; body: ErrorBody } {

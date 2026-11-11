@@ -2,6 +2,7 @@ import { backoffDelayMs, type OutboxMessage } from "../../domain/messaging/outbo
 import type { Clock } from "../ports/clock";
 import type { EventPublisher } from "../ports/event-publisher";
 import type { Logger } from "../ports/logger";
+import type { Metrics } from "../ports/metrics";
 import type { UnitOfWork } from "../ports/unit-of-work";
 
 export interface OutboxPublisherOptions {
@@ -59,6 +60,7 @@ export class OutboxPublisherWorker {
     private readonly publisher: EventPublisher,
     private readonly clock: Clock,
     private readonly logger: Logger,
+    private readonly metrics: Metrics,
     private readonly options: OutboxPublisherOptions,
   ) {}
 
@@ -140,6 +142,7 @@ export class OutboxPublisherWorker {
         if (mensagem.attempts >= this.options.maxAttempts) {
           await ctx.outbox.abandon(mensagem.id, falha.reason);
         } else {
+          this.metrics.retryScheduled("outbox_event");
           await ctx.outbox.deferRetry(
             mensagem.id,
             backoffDelayMs(mensagem.attempts),
@@ -165,6 +168,9 @@ export class OutboxPublisherWorker {
     const lagMs = await this.uow.read((ctx) =>
       ctx.outbox.oldestPendingAgeMs(this.clock.now()),
     );
+    // A metrica que denuncia publisher parado: o dinheiro esta correto no
+    // banco, a API responde 200, e o mundo externo nao esta sendo avisado.
+    this.metrics.outboxLagObserved(lagMs);
     const campos = { workerId: this.options.workerId, outboxLagMs: lagMs };
 
     if (lagMs >= this.options.lagWarnMs) this.logger.warn("outbox atrasada", campos);

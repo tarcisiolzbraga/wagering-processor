@@ -13,6 +13,7 @@ import type { Wallet } from "../../domain/wallet/wallet";
 import { WagerTransactionStatus } from "../../domain/wagering/wager-transaction-status";
 import type { WagerTransaction } from "../../domain/wagering/wager-transaction";
 import type { IdGenerator } from "../ports/id-generator";
+import type { Metrics } from "../ports/metrics";
 import type { TransactionalContext } from "../ports/unit-of-work";
 
 export enum ApplyOutcomeKind {
@@ -52,7 +53,10 @@ export interface ApplyParams {
  * reprocessamento, conta tentativa e eventualmente rejeita.
  */
 export class WagerTransactionApplier {
-  constructor(private readonly ids: IdGenerator) {}
+  constructor(
+    private readonly ids: IdGenerator,
+    private readonly metrics: Metrics,
+  ) {}
 
   async apply(params: ApplyParams): Promise<ApplyOutcome> {
     const { ctx, transaction, wallet, now } = params;
@@ -116,7 +120,10 @@ export class WagerTransactionApplier {
     await ctx.ledger.insert(entry);
 
     if (!(await ctx.wallets.updateBalance(wallet, versionBefore))) {
-      // O FOR UPDATE deveria ter impedido. Chegar aqui e bug de caminho.
+      // O FOR UPDATE deveria ter impedido. Chegar aqui e bug de caminho, e a
+      // metrica separa isso de contencao real: `version_mismatch` e **bug**,
+      // `deadlock` e carga.
+      this.metrics.lockConflictDetected("version_mismatch");
       throw new InvariantViolationError(
         `saldo da carteira ${wallet.id} mudou sob o lock (version esperada ${versionBefore})`,
       );

@@ -22,10 +22,11 @@ import {
   WagerTransactionSource as Source,
 } from "../../src/domain/wagering/wager-transaction-kind";
 import { WagerTransactionStatus as Status } from "../../src/domain/wagering/wager-transaction-status";
-import { ConsoleLogger } from "../../src/infrastructure/observability/console-logger";
 import { MikroUnitOfWork } from "../../src/infrastructure/persistence/unit-of-work";
 import { UuidV7Generator } from "../../src/infrastructure/system-clock";
 import { openOrmWithFreshSchema } from "../support/database";
+import { loggerMudo } from "../support/logger";
+import { MetricsEspia } from "../support/metrics";
 
 class RelogioControlado implements Clock {
   constructor(private instante = new Date("2026-11-11T12:00:00.000Z")) {}
@@ -49,16 +50,17 @@ let worker: PendingReferenceWorker;
 
 const ids = new UuidV7Generator();
 const uuid = (): string => crypto.randomUUID();
-const logger = new ConsoleLogger("error");
+const metrics = new MetricsEspia();
 
 /** Worker com limites reduzidos, para esgotar sem esperar 24h. */
 function workerCom(over: Partial<typeof DEFAULT_PENDING_REFERENCE_OPTIONS> = {}): PendingReferenceWorker {
   return new PendingReferenceWorker(
     uow,
-    new WagerTransactionApplier(ids),
+    new WagerTransactionApplier(ids, metrics),
     clock,
     ids,
-    logger,
+    loggerMudo,
+    metrics,
     { ...DEFAULT_PENDING_REFERENCE_OPTIONS, ...over },
   );
 }
@@ -67,9 +69,9 @@ beforeAll(async () => {
   orm = await openOrmWithFreshSchema();
   uow = new MikroUnitOfWork(orm);
   clock = new RelogioControlado();
-  const applier = new WagerTransactionApplier(ids);
-  submit = new SubmitWagerTransaction(uow, clock, ids, applier);
-  open = new OpenWallet(uow, clock, ids);
+  const applier = new WagerTransactionApplier(ids, metrics);
+  submit = new SubmitWagerTransaction(uow, clock, ids, applier, loggerMudo, metrics);
+  open = new OpenWallet(uow, clock, ids, metrics);
   walletQueries = new WalletQueries(uow);
   txQueries = new WagerTransactionQueries(uow);
   reconcile = new ReconcileWallet(uow, { divergenceDetected: () => {} });
@@ -378,7 +380,7 @@ describe("worker de referencia ausente — replicas concorrentes", () => {
     await submit.run(comando(walletId, playerId, { externalTransactionId: betExternalId }));
 
     // Um aplicador que estoura so para a primeira transacao.
-    const aplicadorInstavel = new WagerTransactionApplier(ids);
+    const aplicadorInstavel = new WagerTransactionApplier(ids, metrics);
     const originalApply = aplicadorInstavel.apply.bind(aplicadorInstavel);
     aplicadorInstavel.apply = async (params) => {
       if (params.transaction.id === problematica.transactionId) {
@@ -392,7 +394,8 @@ describe("worker de referencia ausente — replicas concorrentes", () => {
       aplicadorInstavel,
       clock,
       ids,
-      logger,
+      loggerMudo,
+      metrics,
       { ...DEFAULT_PENDING_REFERENCE_OPTIONS, failureBackoffMs: 600_000 },
     );
 
@@ -435,5 +438,57 @@ describe("invariante final apos reprocessamento", () => {
     const resultado = await reconcile.run(walletId);
     expect(resultado?.consistent).toBe(true);
     expect(resultado?.storedBalance.amount).toBe("500.00");
+  });
+});
+
+describe("metrica do que o worker aplica", () => {
+  it("conta a transacao resolvida pelo worker, com o source original", async () => {
+    const { walletId, playerId } = await carteira("100.00");
+    const betExternalId = `bet-${uuid()}`;
+
+    await submit.run(
+      comando(walletId, playerId, {
+        kind: Kind.Rollback,
+        referenceExternalTransactionId: betExternalId,
+      }),
+    );
+    await submit.run(comando(walletId, playerId, { externalTransactionId: betExternalId }));
+
+    await venceAgendamentos();
+    metrics.limpa();
+    expect((await worker.runOnce()).resolved).toBeGreaterThanOrEqual(1);
+
+    // A transacao saiu da submissao como PENDING_REFERENCE e foi aplicada
+    // aqui. Sem esta contagem, toda reversao que chega antes da referencia
+    // ficaria fora da serie e ela nao fecharia com o ledger.
+    const aplicadas = metrics.transacoes.filter((t) => t.outcome === "PROCESSED");
+    expect(aplicadas).toHaveLength(1);
+    expect(aplicadas[0]).toMatchObject({ kind: Kind.Rollback, source: Source.Api });
+  });
+
+  it("conta a rejeicao por TTL esgotado", async () => {
+    const { walletId, playerId } = await carteira("100.00");
+    await submit.run(
+      comando(walletId, playerId, {
+        kind: Kind.Refund,
+        referenceExternalTransactionId: `ausente-${uuid()}`,
+      }),
+    );
+
+    const curto = workerCom({ maxAttempts: 1, ttlMs: 0 });
+    await venceAgendamentos();
+    metrics.limpa();
+    expect((await curto.runOnce()).rejected).toBeGreaterThanOrEqual(1);
+
+    // `ttlMs: 0` esgota tambem as pendencias dos testes anteriores do arquivo,
+    // entao a afirmacao e sobre a natureza do que foi contado, nao a
+    // quantidade: toda rejeicao deste ciclo e por referencia inexistente.
+    expect(metrics.transacoes.length).toBeGreaterThanOrEqual(1);
+    expect(
+      metrics.transacoes.every(
+        (t) => t.outcome === "REJECTED" && t.failureCode === FailureCode.ReferenceNotFound,
+      ),
+    ).toBe(true);
+    expect(metrics.transacoes.some((t) => t.kind === Kind.Refund)).toBe(true);
   });
 });

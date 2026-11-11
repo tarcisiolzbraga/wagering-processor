@@ -4,6 +4,7 @@ import { OutboxMessage } from "../../domain/messaging/outbox-message";
 import { Money, type MoneyProps } from "../../domain/money/money";
 import {
   DomainRuleViolationError,
+  InvalidInputError,
   InvariantViolationError,
 } from "../../domain/shared/domain-error";
 import { FailureCode } from "../../domain/shared/failure-code";
@@ -18,7 +19,11 @@ import {
 } from "../../domain/wagering/wager-transaction";
 import type { Clock } from "../ports/clock";
 import type { IdGenerator } from "../ports/id-generator";
+import type { Logger } from "../ports/logger";
+import type { DuplicateKind, Metrics } from "../ports/metrics";
 import { InsertTransactionOutcome } from "../ports/repositories";
+import { errorMessageForLog, errorNameOf } from "../shared/error-fields";
+import { classifyFailure, FailureKind, sqlStateOf } from "../shared/failure-classification";
 import type { TransactionalContext, UnitOfWork } from "../ports/unit-of-work";
 import { assertUuid } from "../shared/assert-uuid";
 import {
@@ -56,6 +61,27 @@ export enum SubmitOutcome {
   DuplicateMessage = "DUPLICATE_MESSAGE",
 }
 
+/**
+ * Nivel por desfecho. Rejeicao de negocio e `warn`, nao `error`: aposta sem
+ * saldo e operacao normal do sistema, e poluir `error` com ela treina quem
+ * opera a ignorar o nivel.
+ */
+const NIVEL: Record<SubmitOutcome, "info" | "warn"> = {
+  [SubmitOutcome.Processed]: "info",
+  [SubmitOutcome.PendingReference]: "info",
+  [SubmitOutcome.Rejected]: "warn",
+  [SubmitOutcome.IdempotencyConflict]: "warn",
+  [SubmitOutcome.DuplicateExternalTransaction]: "warn",
+  [SubmitOutcome.DuplicateMessage]: "info",
+};
+
+/** Desfechos que sao, por si, uma duplicata detectada. */
+const DUPLICATAS: Partial<Record<SubmitOutcome, DuplicateKind>> = {
+  [SubmitOutcome.IdempotencyConflict]: "idempotency_conflict",
+  [SubmitOutcome.DuplicateExternalTransaction]: "external_transaction",
+  [SubmitOutcome.DuplicateMessage]: "inbox_message",
+};
+
 export interface SubmitWagerTransactionResult {
   readonly outcome: SubmitOutcome;
   readonly transactionId?: string | undefined;
@@ -80,9 +106,32 @@ export class SubmitWagerTransaction {
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
     private readonly applier: WagerTransactionApplier,
+    private readonly logger: Logger,
+    private readonly metrics: Metrics,
   ) {}
 
+  /**
+   * Mede e registra; a regra fica em `executa`.
+   *
+   * A latencia e observada **inclusive quando estoura**: um caminho que falha
+   * devagar e justamente o que precisa aparecer, e medir so o sucesso daria um
+   * p99 otimista.
+   */
   async run(entrada: SubmitWagerTransactionCommand): Promise<SubmitWagerTransactionResult> {
+    const iniciado = performance.now();
+    try {
+      const resultado = await this.executa(entrada);
+      this.observa(entrada, resultado, performance.now() - iniciado);
+      return resultado;
+    } catch (erro: unknown) {
+      this.observaFalha(entrada, erro, performance.now() - iniciado);
+      throw erro;
+    }
+  }
+
+  private async executa(
+    entrada: SubmitWagerTransactionCommand,
+  ): Promise<SubmitWagerTransactionResult> {
     // Normaliza antes de tudo: o hash, as consultas e as comparacoes usam o
     // mesmo valor que o banco vai gravar.
     const command: SubmitWagerTransactionCommand = {
@@ -219,6 +268,95 @@ export class SubmitWagerTransaction {
         idempotentReplay: false,
       };
     });
+  }
+
+  // ------------------------------------------------------------- observacao
+
+  private observa(
+    command: SubmitWagerTransactionCommand,
+    resultado: SubmitWagerTransactionResult,
+    durationMs: number,
+  ): void {
+    // Uma linha por submissao, com os campos de correlacao. E o registro que
+    // liga uma reclamacao de provedor ("minha aposta sumiu") a um
+    // transactionId, e dele ao ledger. Valor monetario nao entra: o extrato e
+    // o ledger, nao o log.
+    this.logger[NIVEL[resultado.outcome]]("transacao submetida", {
+      correlationId: command.correlationId,
+      transactionId: resultado.transactionId,
+      walletId: command.walletId,
+      providerId: command.providerId,
+      externalTransactionId: command.externalTransactionId,
+      messageId: command.inbox?.messageId,
+      kind: command.kind,
+      source: command.source,
+      outcome: resultado.outcome,
+      status: resultado.status,
+      failureCode: resultado.failureCode,
+      idempotentReplay: resultado.idempotentReplay,
+      durationMs: Math.round(durationMs),
+    });
+
+    const duplicata = DUPLICATAS[resultado.outcome];
+    if (duplicata) this.metrics.duplicateDetected(duplicata);
+    else if (resultado.idempotentReplay) this.metrics.duplicateDetected("idempotency_replay");
+
+    // Replay nao reconta a transacao. Provedor que reapresenta a mesma aposta
+    // cinco vezes tem um unico debito no ledger; somar as cinco em
+    // `wager_transactions_total` poria a metrica em desacordo com o livro, que
+    // e a unica fonte de verdade. O volume de repeticao fica em
+    // `wager_duplicates_total`, que e onde ele significa algo.
+    if (resultado.idempotentReplay) return;
+
+    this.metrics.transactionObserved({
+      outcome: resultado.outcome,
+      kind: command.kind,
+      source: command.source,
+      failureCode: resultado.failureCode,
+      durationMs,
+    });
+  }
+
+  private observaFalha(
+    command: SubmitWagerTransactionCommand,
+    erro: unknown,
+    durationMs: number,
+  ): void {
+    const estado = sqlStateOf(erro);
+    const classe = classifyFailure(erro);
+    // Payload invalido e erro **do cliente**, nao do sistema. Logar em `error`
+    // e contar como `ERROR` deixaria um provedor com payload errado
+    // indistinguivel de um Postgres fora do ar — e capaz de inflar os dois a
+    // vontade.
+    const doCliente = classe === FailureKind.Business || erro instanceof InvalidInputError;
+
+    this.logger[doCliente ? "warn" : "error"]("transacao interrompida", {
+      correlationId: command.correlationId,
+      walletId: command.walletId,
+      providerId: command.providerId,
+      externalTransactionId: command.externalTransactionId,
+      messageId: command.inbox?.messageId,
+      kind: command.kind,
+      source: command.source,
+      sqlState: estado,
+      failureKind: classe,
+      erro: errorNameOf(erro),
+      mensagem: errorMessageForLog(erro),
+      durationMs: Math.round(durationMs),
+    });
+
+    this.metrics.transactionObserved({
+      outcome: doCliente ? "INVALID" : "ERROR",
+      kind: command.kind,
+      source: command.source,
+      durationMs,
+    });
+
+    // Registrado aqui, e so aqui: este e o caminho que o banco interrompeu, e
+    // contar tambem no filtro HTTP e no consumer dobraria a contagem do mesmo
+    // evento.
+    if (estado === "40P01") this.metrics.lockConflictDetected("deadlock");
+    else if (estado === "40001") this.metrics.lockConflictDetected("serialization");
   }
 
   // ------------------------------------------------------------- auxiliares

@@ -2,6 +2,7 @@ import { MikroORM } from "@mikro-orm/postgresql";
 
 import { loadEnv } from "../../src/config/env";
 import { buildOrmConfig } from "../../src/infrastructure/persistence/mikro-orm.config";
+import { createLogger } from "../../src/infrastructure/observability/create-logger";
 
 /**
  * Abre o ORM com o schema recriado do zero.
@@ -14,7 +15,8 @@ import { buildOrmConfig } from "../../src/infrastructure/persistence/mikro-orm.c
  * TRUNCATE e permitido.
  */
 export async function openOrmWithFreshSchema(): Promise<MikroORM> {
-  const orm = await MikroORM.init(buildOrmConfig(loadEnv()));
+  const env = loadEnv();
+  const orm = await MikroORM.init(buildOrmConfig(env, createLogger(env)));
   const conn = orm.em.getConnection();
   await conn.execute("drop schema public cascade");
   await conn.execute("create schema public");
