@@ -65,6 +65,19 @@ bun run compose:down
 
 Os testes de integração e concorrência precisam da stack no ar (`bun run compose:up`).
 
+### Isolamento da suíte
+
+Os testes rodam contra um **banco e filas próprios** — `wagering_test` e as filas com sufixo `-test`. O `bun test` define `NODE_ENV=test`, e o Bun carrega o [`.env.test`](./.env.test) por cima do `.env`.
+
+Isso não é higiene opcional: os workers do Compose (`consumer`, `outbox-1`, `outbox-2`) ficam vivos durante os testes e, sem o isolamento, competem por eles — roubam mensagens da fila e publicam linhas da outbox que o teste espera encontrar pendentes. O sintoma é falha intermitente que não reproduz quando o arquivo roda isolado.
+
+O banco de teste é criado automaticamente quando o volume do Postgres nasce. Num volume que já existe:
+
+```bash
+docker compose exec postgres psql -U wagering -d postgres \
+  -c "create database wagering_test owner wagering"
+```
+
 ## API
 
 ### Carteiras
@@ -176,12 +189,38 @@ docker compose logs -f consumer &
 docker compose stop -t 40 consumer
 ```
 
+## Publisher da outbox
+
+Os serviços `outbox-1` e `outbox-2` publicam os eventos pendentes. **Duas réplicas de propósito**: o `SKIP LOCKED` e o lease existem justamente para publishers concorrentes, e rodar um só não exercitaria nada disso.
+
+O ciclo é deliberadamente em três etapas, com a publicação **fora** de transação:
+
+1. reivindica com `FOR UPDATE SKIP LOCKED` e grava lease — transação curta;
+2. publica no broker — nenhuma transação aberta;
+3. marca publicada ou agenda retry — transação curta.
+
+A alternativa seria manter a transação aberta durante o envio: não haveria publicação duplicada, mas o tempo de vida de um lock e de uma conexão de banco ficaria amarrado à latência de um terceiro — uma chamada pendurada ao SQS viraria uma transação pendurada, atrasando vacuum e consumindo pool.
+
+Morrer entre as etapas 2 e 3 deixa o lease expirar, outro publisher reivindica e publica de novo. **Publicação duplicada é tolerada por desenho** — o consumidor deduplica pelo `eventId`, que é também o `MessageDeduplicationId` no broker.
+
+Ver os dois publishers dividindo o trabalho:
+
+```bash
+docker compose logs -f outbox-1 outbox-2
+```
+
+A métrica que importa monitorar aqui é o **outbox lag** — a idade da pendência mais antiga. É o sintoma direto da única falha silenciosa deste desenho: o dinheiro está correto no banco, a API responde 200, e o mundo externo não está sendo avisado porque o publisher morreu.
+
 ## Filas
 
 | Fila | Papel |
 |---|---|
 | `wager-transactions.fifo` | entrada de operações; `maxReceiveCount` 5 |
-| `wager-transactions-dlq.fifo` | dead-letter |
+| `wager-transactions-dlq.fifo` | dead-letter da entrada |
+| `wager-events.fifo` | eventos de integração publicados pela outbox |
+| `wager-events-dlq.fifo` | dead-letter dos eventos |
+
+O enunciado define as duas primeiras. As de eventos existem porque os eventos publicados pela outbox precisam de um destino — `MessageGroupId` é a `walletId`, preservando a ordem relativa dos eventos de uma mesma conta.
 
 Criadas automaticamente quando o LocalStack fica pronto, por `docker/localstack/init-queues.sh`. O script é idempotente, então reiniciar o container não quebra nada.
 

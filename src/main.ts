@@ -4,12 +4,12 @@ import { NestFactory } from "@nestjs/core";
 
 import { LOGGER, type Logger } from "./application/ports/logger";
 import { WagerTransactionConsumer } from "./application/wagering/consume-wager-transactions";
+import { OutboxPublisherWorker } from "./application/wagering/publish-outbox";
 import { AppModule } from "./app.module";
 import { loadEnv, type Env } from "./config/env";
 import { DomainExceptionFilter } from "./infrastructure/http/domain-exception.filter";
 
 const NAO_IMPLEMENTADO: Record<string, string> = {
-  outbox: "Fase 7",
   reference: "Fase 8",
 };
 
@@ -69,6 +69,44 @@ async function runConsumer(env: Env): Promise<void> {
   await consumer.start();
 }
 
+/**
+ * Worker da outbox. Como o consumer, nao abre servidor HTTP e drena no
+ * SIGTERM: parar no meio de um ciclo deixaria mensagens reivindicadas com
+ * lease valido, inativas ate ele expirar.
+ */
+async function runOutboxPublisher(env: Env): Promise<void> {
+  const app = await NestFactory.createApplicationContext(AppModule.register(env), {
+    logger: false,
+  });
+  const worker = app.get(OutboxPublisherWorker);
+  const logger = app.get<Logger>(LOGGER);
+
+  let encerrando = false;
+  const encerra = async (signal: string): Promise<void> => {
+    if (encerrando) return;
+    encerrando = true;
+    logger.info("sinal recebido, encerrando o publisher", { signal });
+    await worker.stop();
+    await app.close();
+    process.exit(0);
+  };
+
+  const trata = (signal: string) => (): void => {
+    encerra(signal).catch((erro: unknown) => {
+      logger.error("falha ao encerrar; saindo com erro", {
+        signal,
+        reason: erro instanceof Error ? erro.message : String(erro),
+      });
+      process.exit(1);
+    });
+  };
+
+  process.on("SIGTERM", trata("SIGTERM"));
+  process.on("SIGINT", trata("SIGINT"));
+
+  await worker.start();
+}
+
 async function bootstrap(): Promise<void> {
   const env = loadEnv();
 
@@ -77,6 +115,8 @@ async function bootstrap(): Promise<void> {
       return runApi(env);
     case "consumer":
       return runConsumer(env);
+    case "outbox":
+      return runOutboxPublisher(env);
     default: {
       const fase = NAO_IMPLEMENTADO[env.APP_ROLE];
       throw new Error(`APP_ROLE=${env.APP_ROLE} ainda nao implementado (chega na ${fase}).`);

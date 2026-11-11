@@ -115,10 +115,14 @@ const lancamentosDe = async (walletId: string): Promise<number> =>
  */
 const drenaEventos = async (): Promise<string[]> =>
   uow.run(async (ctx) => {
-    const mensagens = await ctx.outbox.claimDue(500, new Date(Date.now() + 86_400_000));
+    const mensagens = await ctx.outbox.claimDue({
+      limit: 500,
+      leaseSeconds: 30,
+      workerId: "teste",
+      maxAttempts: 10,
+    });
     for (const mensagem of mensagens) {
-      mensagem.markPublished(new Date());
-      await ctx.outbox.markPublished(mensagem);
+      await ctx.outbox.markPublished(mensagem.id);
     }
     return mensagens.map((m) => m.eventType);
   });

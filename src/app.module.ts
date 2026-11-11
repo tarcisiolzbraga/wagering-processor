@@ -2,13 +2,18 @@ import { SQSClient } from "@aws-sdk/client-sqs";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { Module, type DynamicModule, type MiddlewareConsumer, type NestModule } from "@nestjs/common";
 
-import { CLOCK } from "./application/ports/clock";
+import { CLOCK, type Clock } from "./application/ports/clock";
+import { EVENT_PUBLISHER, type EventPublisher } from "./application/ports/event-publisher";
 import { LOGGER, type Logger } from "./application/ports/logger";
 import { MESSAGE_QUEUE, type MessageQueue } from "./application/ports/message-queue";
 import { ID_GENERATOR } from "./application/ports/id-generator";
 import { RECONCILIATION_ALARM } from "./application/ports/reconciliation-alarm";
 import { UNIT_OF_WORK, type UnitOfWork } from "./application/ports/unit-of-work";
 import { WagerTransactionConsumer } from "./application/wagering/consume-wager-transactions";
+import {
+  defaultOutboxOptions,
+  OutboxPublisherWorker,
+} from "./application/wagering/publish-outbox";
 import { SubmitWagerTransaction } from "./application/wagering/submit-wager-transaction";
 import { WagerTransactionQueries } from "./application/wagering/wager-transaction-queries";
 import { OpenWallet } from "./application/wallets/open-wallet";
@@ -20,6 +25,7 @@ import { HealthController } from "./infrastructure/http/health/health.controller
 import { ReadinessService } from "./infrastructure/http/health/readiness.service";
 import { ProvidersController, WageringController } from "./infrastructure/http/wagering.controller";
 import { WalletsController } from "./infrastructure/http/wallets.controller";
+import { SqsEventPublisher } from "./infrastructure/messaging/sqs-event-publisher";
 import { SqsMessageQueue } from "./infrastructure/messaging/sqs-message-queue";
 import { ConsoleLogger } from "./infrastructure/observability/console-logger";
 import { LoggingReconciliationAlarm } from "./infrastructure/observability/logging-reconciliation-alarm";
@@ -71,6 +77,12 @@ export class AppModule implements NestModule {
             new SqsMessageQueue(client, env.SQS_QUEUE_URL, env.SQS_DLQ_URL),
           inject: [SQSClient],
         },
+        {
+          provide: EVENT_PUBLISHER,
+          useFactory: (client: SQSClient) =>
+            new SqsEventPublisher(client, env.SQS_EVENTS_QUEUE_URL),
+          inject: [SQSClient],
+        },
         { provide: CLOCK, useClass: SystemClock },
         { provide: ID_GENERATOR, useClass: UuidV7Generator },
         { provide: RECONCILIATION_ALARM, useClass: LoggingReconciliationAlarm },
@@ -106,6 +118,25 @@ export class AppModule implements NestModule {
           useFactory: (queue: MessageQueue, submit: SubmitWagerTransaction, logger: Logger) =>
             new WagerTransactionConsumer(queue, submit, logger),
           inject: [MESSAGE_QUEUE, SubmitWagerTransaction, LOGGER],
+        },
+        {
+          provide: OutboxPublisherWorker,
+          useFactory: (
+            uow: UnitOfWork,
+            publisher: EventPublisher,
+            clock: Clock,
+            logger: Logger,
+          ) =>
+            new OutboxPublisherWorker(
+              uow,
+              publisher,
+              clock,
+              logger,
+              // O id identifica quem reivindicou, para diagnostico. Com
+              // replicas no Compose, o hostname distingue os processos.
+              defaultOutboxOptions(`${process.env["HOSTNAME"] ?? "local"}:${process.pid}`),
+            ),
+          inject: [UNIT_OF_WORK, EVENT_PUBLISHER, CLOCK, LOGGER],
         },
         {
           provide: ReconcileWallet,

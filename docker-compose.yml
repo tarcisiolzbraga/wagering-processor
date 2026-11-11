@@ -16,6 +16,7 @@ x-api-env: &api-env
   SQS_ENDPOINT: http://localstack:4566
   SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
   SQS_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+  SQS_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wager-events.fifo
   AUTH_ENABLED: "false"
   KEYCLOAK_ISSUER_URL: http://keycloak:8080/realms/jungle
   KEYCLOAK_AUDIENCE: wagering-api
@@ -50,7 +51,11 @@ services:
     # 5433 no host: a 5432 costuma estar ocupada por outro projeto.
     # Dentro da rede do Compose a porta continua sendo 5432.
     ports: ["5433:5432"]
-    volumes: ["pgdata:/var/lib/postgresql/data"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Roda apenas quando o volume e criado do zero. Num volume existente,
+      # criar o banco de teste a mao: ver README.
+      - ./docker/postgres/init-test-db.sql:/docker-entrypoint-initdb.d/10-test-db.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U wagering -d wagering"]
       interval: 5s
@@ -101,6 +106,27 @@ services:
     healthcheck:
       disable: true
     stop_grace_period: 40s
+
+  # Publisher da outbox. Duas replicas de proposito: o SKIP LOCKED e o lease
+  # existem justamente para publishers concorrentes, e rodar um so nao
+  # exercitaria nada disso.
+  outbox-1:
+    <<: *api
+    environment:
+      <<: *api-env
+      APP_ROLE: outbox
+    healthcheck:
+      disable: true
+    stop_grace_period: 20s
+
+  outbox-2:
+    <<: *api
+    environment:
+      <<: *api-env
+      APP_ROLE: outbox
+    healthcheck:
+      disable: true
+    stop_grace_period: 20s
 
   api-1:
     <<: *api
